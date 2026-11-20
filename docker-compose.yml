@@ -1,0 +1,62 @@
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: cloudvideo-qbittorrent
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-Asia/Shanghai}
+      - WEBUI_PORT=8080
+      - TORRENTING_PORT=${QBIT_PORT:-6881}
+    volumes:
+      - ./data/qbittorrent/config:/config
+      - ./data/downloads:/downloads
+      - ./scripts/qbittorrent-init.sh:/custom-cont-init.d/99-cloudvideo-init.sh:ro
+    ports:
+      - "${QBIT_PORT:-6881}:${QBIT_PORT:-6881}"
+      - "${QBIT_PORT:-6881}:${QBIT_PORT:-6881}/udp"
+      # 安全起见默认不暴露 qBittorrent WebUI 到公网，如需调试可取消下行注释：
+      # - "127.0.0.1:8080:8080"
+    networks:
+      - cloudvideo-net
+
+  cloud-video:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudvideo-app
+    restart: unless-stopped
+    depends_on:
+      - qbittorrent
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - TZ=${TZ:-Asia/Shanghai}
+      - APP_PASSWORD=${APP_PASSWORD:-change-me-strong-password}
+      - JWT_SECRET=${JWT_SECRET:-change-me-random-secret-key-at-least-32-chars}
+      - QBIT_URL=http://qbittorrent:8080
+      - DOWNLOAD_DIR=/downloads
+      - DATA_DIR=/app/data
+      - STORAGE_LIMIT_GB=${STORAGE_LIMIT_GB:-45}
+      - AUTO_DELETE_DELAY_HOURS=${AUTO_DELETE_DELAY_HOURS:-24}
+      - WATCHED_THRESHOLD=${WATCHED_THRESHOLD:-0.9}
+      - UPLOAD_LIMIT_KBPS=${UPLOAD_LIMIT_KBPS:-512}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+    volumes:
+      - ./data/app:/app/data
+      - ./data/downloads:/downloads
+    ports:
+      - "${PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - cloudvideo-net
+
+networks:
+  cloudvideo-net:
+    driver: bridge
