@@ -24,6 +24,7 @@ export interface HubSearchResult {
   resolution: string;
   tags: string[];
   exceedsLimit: boolean;
+  unavailableReason?: string;
 }
 
 export interface ProwlarrTestResult {
@@ -38,6 +39,7 @@ export interface HubSearchResponse {
   category: HubCategory;
   results: HubSearchResult[];
   sourcesQueried: number;
+  indexerBreakdown: Array<{ name: string; count: number }>;
   errors: string[];
   storageLimitBytes: number;
 }
@@ -138,6 +140,28 @@ export function extractHexHashFromMagnet(magnet: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+export function buildMagnetFromInfoHash(infoHash: string, title: string): string {
+  const clean = infoHash.trim();
+  if (/^[a-fA-F0-9]{40}$/.test(clean) || /^[a-zA-Z2-7]{32}$/.test(clean)) {
+    return `magnet:?xt=urn:btih:${clean.toLowerCase()}&dn=${encodeURIComponent(title)}`;
+  }
+  return '';
+}
+
+function resolveOptionalHttpUrl(raw: string | undefined | null, baseUrl?: string): string {
+  const val = (raw || '').trim();
+  if (!val || /^magnet:/i.test(val)) return '';
+  if (/^https?:\/\//i.test(val)) return val;
+  if (baseUrl) {
+    try {
+      return new URL(val, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString();
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 export function parseTorznabXml(
   xml: string,
   fallbackIndexer: string,
@@ -195,19 +219,24 @@ export function parseTorznabXml(
       enclosureLen;
 
     let magnetUrl = firstAttr('magneturl');
-    if (!magnetUrl && link.startsWith('magnet:')) magnetUrl = link;
-    if (!magnetUrl && enclosureUrl.startsWith('magnet:')) magnetUrl = enclosureUrl;
+    if (!magnetUrl && /^magnet:/i.test(link)) magnetUrl = link;
+    if (!magnetUrl && /^magnet:/i.test(enclosureUrl)) magnetUrl = enclosureUrl;
+    if (!magnetUrl && /^magnet:/i.test(guid)) magnetUrl = guid;
 
     let downloadUrl = '';
-    if (enclosureUrl && !enclosureUrl.startsWith('magnet:')) {
+    if (enclosureUrl && !/^magnet:/i.test(enclosureUrl)) {
       downloadUrl = enclosureUrl;
-    } else if (link && !link.startsWith('magnet:')) {
+    } else if (link && !/^magnet:/i.test(link)) {
       downloadUrl = link;
     }
 
     const infoHash =
       firstAttr('infohash').toLowerCase() ||
       (magnetUrl ? extractHexHashFromMagnet(magnetUrl) || '' : '');
+
+    if (!magnetUrl && !downloadUrl && infoHash) {
+      magnetUrl = buildMagnetFromInfoHash(infoHash, title);
+    }
 
     const categories = (attrMap.get('category') || [])
       .map((v) => parseInt(v, 10))
@@ -224,6 +253,9 @@ export function parseTorznabXml(
       .update(`${indexer}:${guid || infoHash || title}:${sizeBytes}`)
       .digest('hex')
       .slice(0, 16);
+
+    const unavailableReason =
+      !magnetUrl && !downloadUrl ? '该索引站未返回磁力链接或种子直链' : undefined;
 
     results.push({
       id,
@@ -243,6 +275,7 @@ export function parseTorznabXml(
       resolution: meta.resolution,
       tags: meta.tags,
       exceedsLimit: storageLimitBytes > 0 && sizeBytes > storageLimitBytes,
+      unavailableReason,
     });
   }
 
@@ -334,6 +367,7 @@ export class HubService {
       guid?: string;
       title?: string;
       indexer?: string;
+      protocol?: string;
       size?: number;
       seeders?: number;
       leechers?: number;
@@ -347,20 +381,27 @@ export class HubService {
 
     const results: HubSearchResult[] = [];
     for (const item of raw) {
+      if (item.protocol?.toLowerCase() === 'usenet') continue;
       const title = (item.title || '').trim();
       if (!title) continue;
 
       const sizeBytes = Number(item.size || 0) || 0;
-      const magnetUrl = item.magnetUrl?.startsWith('magnet:')
-        ? item.magnetUrl
-        : item.downloadUrl?.startsWith('magnet:')
-          ? item.downloadUrl
-          : '';
-      const downloadUrl =
-        item.downloadUrl && !item.downloadUrl.startsWith('magnet:') ? item.downloadUrl : '';
+      let magnetUrl = /^magnet:/i.test(item.magnetUrl || '')
+        ? (item.magnetUrl || '').trim()
+        : /^magnet:/i.test(item.downloadUrl || '')
+          ? (item.downloadUrl || '').trim()
+          : /^magnet:/i.test(item.guid || '')
+            ? (item.guid || '').trim()
+            : '';
+      const downloadUrl = resolveOptionalHttpUrl(item.downloadUrl, baseUrl);
       const infoHash =
-        (item.infoHash || '').toLowerCase() ||
+        (item.infoHash || '').trim().toLowerCase() ||
         (magnetUrl ? extractHexHashFromMagnet(magnetUrl) || '' : '');
+
+      // Some indexers expose only raw infoHash without a magnet/download URL — synthesize a valid magnet URI!
+      if (!magnetUrl && !downloadUrl && infoHash) {
+        magnetUrl = buildMagnetFromInfoHash(infoHash, title);
+      }
 
       const categories = (item.categories || [])
         .map((c) => (typeof c === 'number' ? c : Number(c?.id)))
@@ -375,6 +416,9 @@ export class HubService {
         .update(`prowlarr:${indexer}:${item.guid || infoHash || title}:${sizeBytes}`)
         .digest('hex')
         .slice(0, 16);
+
+      const unavailableReason =
+        !magnetUrl && !downloadUrl ? '该索引站未返回磁力链接或种子直链' : undefined;
 
       results.push({
         id,
@@ -394,6 +438,7 @@ export class HubService {
         resolution: meta.resolution,
         tags: meta.tags,
         exceedsLimit: storageLimitBytes > 0 && sizeBytes > storageLimitBytes,
+        unavailableReason,
       });
     }
 
@@ -436,8 +481,14 @@ export class HubService {
     const storageLimitBytes = Math.round(settings.storageLimitGb * 1024 * 1024 * 1024);
 
     const tasks: Array<{ label: string; promise: Promise<HubSearchResult[]> }> = [];
+    const hasProwlarr = Boolean(settings.prowlarrUrl.trim() && settings.prowlarrApiKey.trim());
+    let prowlarrIndexersPromise: Promise<ProwlarrTestResult> | null = null;
 
-    if (settings.prowlarrUrl.trim() && settings.prowlarrApiKey.trim()) {
+    if (hasProwlarr) {
+      prowlarrIndexersPromise = this.testProwlarrConnection(
+        settings.prowlarrUrl.trim(),
+        settings.prowlarrApiKey.trim()
+      );
       tasks.push({
         label: 'Prowlarr',
         promise: this.searchProwlarr(
@@ -464,12 +515,16 @@ export class HubService {
         category,
         results: [],
         sourcesQueried: 0,
+        indexerBreakdown: [],
         errors: ['尚未配置任何搜索索引源，请先在「索引源接入」中配置 Prowlarr 或 Torznab 源'],
         storageLimitBytes,
       };
     }
 
-    const settled = await Promise.allSettled(tasks.map((t) => t.promise));
+    const [settled, prowlarrMeta] = await Promise.all([
+      Promise.allSettled(tasks.map((t) => t.promise)),
+      prowlarrIndexersPromise ? prowlarrIndexersPromise.catch(() => null) : Promise.resolve(null),
+    ]);
     const errors: string[] = [];
     const dedup = new Map<string, HubSearchResult>();
 
@@ -484,7 +539,14 @@ export class HubService {
           ? `hash:${item.infoHash}`
           : `title:${item.title.toLowerCase()}:${item.sizeBytes}`;
         const existing = dedup.get(dedupKey);
-        if (!existing || item.seeders > existing.seeders) {
+        // Prefer downloadable result first, then higher seeders
+        const itemDownloadable = Boolean(item.magnetUrl || item.downloadUrl);
+        const existingDownloadable = existing ? Boolean(existing.magnetUrl || existing.downloadUrl) : false;
+        if (
+          !existing ||
+          (itemDownloadable && !existingDownloadable) ||
+          (itemDownloadable === existingDownloadable && item.seeders > existing.seeders)
+        ) {
           dedup.set(dedupKey, item);
         }
       }
@@ -498,11 +560,39 @@ export class HubService {
       return b.seeders - a.seeders || b.publishTimestamp - a.publishTimestamp;
     });
 
+    // Build real per-indexer hit count breakdown
+    const breakdownMap = new Map<string, number>();
+    if (prowlarrMeta?.ok) {
+      for (const idx of prowlarrMeta.enabledIndexers) {
+        if (idx.protocol.toLowerCase() !== 'usenet') {
+          breakdownMap.set(idx.name, 0);
+        }
+      }
+    }
+    for (const idx of torznabList) {
+      if (!breakdownMap.has(idx.name)) breakdownMap.set(idx.name, 0);
+    }
+    for (const r of results) {
+      breakdownMap.set(r.indexer, (breakdownMap.get(r.indexer) || 0) + 1);
+    }
+
+    const indexerBreakdown = Array.from(breakdownMap.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+    const realSourceCount =
+      (prowlarrMeta?.ok
+        ? prowlarrMeta.enabledIndexers.filter((i) => i.protocol.toLowerCase() !== 'usenet').length
+        : hasProwlarr
+          ? 1
+          : 0) + torznabList.length;
+
     return {
       query,
       category,
       results: results.slice(0, 120),
-      sourcesQueried: tasks.length,
+      sourcesQueried: Math.max(realSourceCount, indexerBreakdown.length),
+      indexerBreakdown,
       errors,
       storageLimitBytes,
     };

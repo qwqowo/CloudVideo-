@@ -696,11 +696,29 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
           {/* Results Telemetry List */}
           {searchData && (
             <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 px-1">
-                <span>
-                  RESULTS: <strong className="text-cyan-300">{filteredResults.length}</strong> /{' '}
-                  {searchData.results.length}（已查 {searchData.sourcesQueried} 个源）
-                </span>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-zinc-400 px-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>
+                    RESULTS: <strong className="text-cyan-300">{filteredResults.length}</strong> /{' '}
+                    {searchData.results.length}（已查 {searchData.sourcesQueried} 个站点）
+                  </span>
+                  {searchData.indexerBreakdown && searchData.indexerBreakdown.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {searchData.indexerBreakdown.map((b) => (
+                        <span
+                          key={b.name}
+                          className={`px-1.5 py-0.5 text-[10px] border ${
+                            b.count > 0
+                              ? 'border-cyan-400/30 bg-cyan-400/10 text-cyan-200'
+                              : 'border-white/[0.06] text-zinc-500'
+                          }`}
+                        >
+                          {b.name} ({b.count})
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <span>
                   DISK CAP:{' '}
                   <strong className="text-zinc-200">
@@ -806,10 +824,34 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
                                 <Check className="w-3.5 h-3.5" />
                                 已推送 · 查看
                               </button>
+                            ) : !hasDownload ? (
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  title={item.unavailableReason || '索引站未提供磁力或种子下载链接'}
+                                  className="px-2.5 py-1.5 border border-white/10 bg-white/[0.02] text-zinc-500 text-[11px] font-mono"
+                                >
+                                  无种子直链
+                                </span>
+                                {item.infoUrl && (
+                                  <a
+                                    href={item.infoUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="px-2.5 py-1.5 border border-cyan-400/30 bg-cyan-400/5 hover:bg-cyan-400/15 text-cyan-300 text-[11px] font-mono flex items-center gap-1"
+                                  >
+                                    原站页 <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                              </div>
                             ) : (
                               <>
                                 <button
-                                  disabled={!hasDownload || isPushing}
+                                  disabled={isPushing}
+                                  title={
+                                    item.seeders === 0
+                                      ? '做种数为 0（部分站点不回报做种数，仍可尝试通过 DHT 下载）'
+                                      : '推送至 qBittorrent 并开启顺序下载'
+                                  }
                                   onClick={() => void handlePushItem(item, false)}
                                   className="px-3 py-1.5 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-zinc-950 text-xs font-mono font-bold flex items-center gap-1.5 transition"
                                 >
@@ -817,7 +859,7 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
                                   {isPushing ? '推送中...' : '边下边播'}
                                 </button>
                                 <button
-                                  disabled={!hasDownload || isPushing}
+                                  disabled={isPushing}
                                   onClick={() => void handlePushItem(item, true)}
                                   title="适合整季大合集：仅自动下载前 N 集，看到 70% 自动预载下一集"
                                   className="px-2.5 py-1.5 border border-amber-400/40 bg-amber-400/10 hover:bg-amber-400/20 disabled:opacity-40 text-amber-300 text-xs font-mono flex items-center gap-1 transition"

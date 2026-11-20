@@ -234,6 +234,7 @@ export interface HubSearchResult {
   resolution: string;
   tags: string[];
   exceedsLimit: boolean;
+  unavailableReason?: string;
 }
 
 export interface HubSearchResponse {
@@ -241,6 +242,7 @@ export interface HubSearchResponse {
   category: 'all' | 'movies' | 'tv' | 'anime';
   results: HubSearchResult[];
   sourcesQueried: number;
+  indexerBreakdown?: Array<{ name: string; count: number }>;
   errors: string[];
   storageLimitBytes: number;
 }

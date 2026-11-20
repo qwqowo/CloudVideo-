@@ -611,8 +611,35 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
               seeders: 45,
               leechers: 5,
               publishDate: '2026-11-20T12:00:00Z',
-              downloadUrl: `http://127.0.0.1:${(mockServer.address() as any).port}/download/file.torrent`,
+              downloadUrl: '/download/file.torrent',
               infoHash: hashB,
+              categories: [{ id: 2000 }],
+            },
+            {
+              guid: 'prowlarr-3-hash-only',
+              title: 'Dune.Part.Two.2024.HashOnly.1080p',
+              indexer: 'Nyaa',
+              size: 2 * 1024 * 1024 * 1024,
+              seeders: 12,
+              leechers: 2,
+              publishDate: '2026-11-20T11:00:00Z',
+              downloadUrl: null,
+              magnetUrl: null,
+              infoHash: '9999999999999999999999999999999999999999',
+              categories: [{ id: 2000 }],
+            },
+            {
+              guid: 'prowlarr-4-nolink',
+              title: 'Dune.Part.Two.2024.NoLink.Sample',
+              indexer: '1337x',
+              size: 100 * 1024 * 1024,
+              seeders: 0,
+              leechers: 0,
+              publishDate: '2026-11-20T10:00:00Z',
+              downloadUrl: null,
+              magnetUrl: null,
+              infoHash: null,
+              infoUrl: 'https://example.org/detail/4',
               categories: [{ id: 2000 }],
             },
           ])
@@ -720,7 +747,8 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
       });
       assert.equal(addTz.statusCode, 200);
 
-      // 3) Aggregated search deduplicates hashB keeping higher seeders (88 > 45) & marks 60GB item exceedsLimit
+      // 3) Aggregated search deduplicates hashB keeping higher seeders (88 > 45),
+      //    synthesizes magnet from hash-only items, marks 60GB item exceedsLimit, and reports real 3 indexers
       const searchRes = await ctx.app.inject({
         method: 'GET',
         url: '/api/hub/search?q=Dune&category=movies&sort=seeders',
@@ -728,14 +756,22 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
       });
       assert.equal(searchRes.statusCode, 200);
       const searchBody = searchRes.json();
-      assert.equal(searchBody.sourcesQueried, 2);
-      assert.equal(searchBody.results.length, 2);
+      assert.equal(searchBody.sourcesQueried, 3);
+      assert.equal(searchBody.results.length, 4);
       assert.equal(searchBody.results[0].seeders, 120);
       assert.equal(searchBody.results[0].resolution, '4K');
       assert.equal(searchBody.results[0].exceedsLimit, true);
       assert.ok(searchBody.results[0].tags.includes('中字'));
       assert.equal(searchBody.results[1].seeders, 88);
       assert.equal(searchBody.results[1].indexer, 'MockJackett');
+      assert.ok(
+        searchBody.results[2].magnetUrl.startsWith(
+          'magnet:?xt=urn:btih:9999999999999999999999999999999999999999'
+        )
+      );
+      assert.ok(searchBody.results[3].unavailableReason);
+      assert.ok(Array.isArray(searchBody.indexerBreakdown));
+      assert.equal(searchBody.indexerBreakdown.length, 3);
 
       // 4) Push 302-to-magnet URL with bingeMode -> catches magnet redirect & registers binge policy
       const dlMagnet = await ctx.app.inject({
