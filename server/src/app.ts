@@ -6,9 +6,11 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import type { AppConfig } from './config.js';
 import { AppDatabase } from './db.js';
-import { createAuthHook } from './auth.js';
+import { createAuthHook, LoginRateLimiter } from './auth.js';
 import { QBittorrentClient, type IQBittorrentClient } from './services/qbittorrent.js';
 import { CleanupService } from './services/cleanup.js';
+import { TmdbService } from './services/tmdb.js';
+import { NotifierService } from './services/notifier.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerTorrentRoutes } from './routes/torrents.js';
 import { killAllFfmpeg, registerStreamRoutes } from './routes/stream.js';
@@ -20,12 +22,18 @@ export interface AppContext {
   db: AppDatabase;
   qbit: IQBittorrentClient;
   cleanup: CleanupService;
+  tmdb: TmdbService;
+  notifier: NotifierService;
   close: () => Promise<void>;
 }
 
 export async function buildApp(
   config: AppConfig,
-  overrides: { qbit?: IQBittorrentClient; startScheduler?: boolean } = {}
+  overrides: {
+    qbit?: IQBittorrentClient;
+    startScheduler?: boolean;
+    loginRateLimiter?: LoginRateLimiter;
+  } = {}
 ): Promise<AppContext> {
   fs.mkdirSync(config.dataDir, { recursive: true });
   fs.mkdirSync(config.downloadDir, { recursive: true });
@@ -34,7 +42,9 @@ export async function buildApp(
   const db = new AppDatabase(dbPath, config.defaults);
   const qbit =
     overrides.qbit ?? new QBittorrentClient(config.qbitUrl, config.qbitUsername, config.qbitPassword);
-  const cleanup = new CleanupService(config, db, qbit);
+  const notifier = new NotifierService(db);
+  const tmdb = new TmdbService(db);
+  const cleanup = new CleanupService(config, db, qbit, notifier);
   const requireAuth = createAuthHook(config.jwtSecret);
 
   const app = Fastify({
@@ -55,13 +65,12 @@ export async function buildApp(
     uptimeSec: Math.round(process.uptime()),
   }));
 
-  await registerAuthRoutes(app, config);
-  await registerTorrentRoutes(app, { config, db, qbit, cleanup, requireAuth });
+  await registerAuthRoutes(app, config, overrides.loginRateLimiter);
+  await registerTorrentRoutes(app, { config, db, qbit, cleanup, tmdb, requireAuth });
   await registerStreamRoutes(app, { config, db, qbit, requireAuth });
   await registerSpeedTestRoutes(app, { db, requireAuth });
-  await registerSettingsRoutes(app, { db, qbit, cleanup, requireAuth });
+  await registerSettingsRoutes(app, { db, qbit, cleanup, notifier, requireAuth });
 
-  // Serve built frontend SPA when available
   if (fs.existsSync(config.webDistDir)) {
     await app.register(fastifyStatic, {
       root: config.webDistDir,
@@ -78,7 +87,7 @@ export async function buildApp(
   }
 
   if (overrides.startScheduler !== false) {
-    cleanup.startScheduler(60_000);
+    cleanup.startScheduler(30_000);
   }
 
   const close = async () => {
@@ -88,5 +97,5 @@ export async function buildApp(
     db.close();
   };
 
-  return { app, db, qbit, cleanup, close };
+  return { app, db, qbit, cleanup, tmdb, notifier, close };
 }

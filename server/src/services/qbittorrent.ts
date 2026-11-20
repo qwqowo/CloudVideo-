@@ -47,6 +47,18 @@ export interface AddTorrentOptions {
   savePath?: string;
 }
 
+export interface QBitFullPreferences {
+  uploadLimitKbps: number;
+  stopOnComplete: boolean;
+  proxyEnabled?: boolean;
+  proxyType?: 'none' | 'http' | 'socks5';
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  proxyPassword?: string;
+  defaultTrackers?: string[];
+}
+
 export interface IQBittorrentClient {
   checkHealth(): Promise<{ connected: boolean; version?: string; error?: string }>;
   listTorrents(): Promise<QBitTorrent[]>;
@@ -60,7 +72,9 @@ export interface IQBittorrentClient {
   toggleSequential(hash: string): Promise<void>;
   toggleFirstLastPiecePrio(hash: string): Promise<void>;
   deleteTorrents(hashes: string[], deleteFiles: boolean): Promise<void>;
+  addTrackers(hash: string, trackers: string[]): Promise<void>;
   applyPreferences(uploadLimitKbps: number, stopOnComplete: boolean): Promise<void>;
+  applyFullPreferences(opts: QBitFullPreferences): Promise<void>;
 }
 
 export class QBittorrentClient implements IQBittorrentClient {
@@ -271,14 +285,54 @@ export class QBittorrentClient implements IQBittorrentClient {
     });
   }
 
+  async addTrackers(hash: string, trackers: string[]): Promise<void> {
+    if (trackers.length === 0) return;
+    const body = new URLSearchParams({
+      hash: hash.toLowerCase(),
+      urls: trackers.join('\n'),
+    });
+    await this.request('/api/v2/torrents/addTrackers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+  }
+
   async applyPreferences(uploadLimitKbps: number, stopOnComplete: boolean): Promise<void> {
+    await this.applyFullPreferences({ uploadLimitKbps, stopOnComplete });
+  }
+
+  async applyFullPreferences(opts: QBitFullPreferences): Promise<void> {
     const prefs: Record<string, unknown> = {
-      up_limit: Math.max(0, Math.round(uploadLimitKbps * 1024)),
-      max_ratio_enabled: stopOnComplete,
-      max_ratio: stopOnComplete ? 0 : -1,
+      up_limit: Math.max(0, Math.round(opts.uploadLimitKbps * 1024)),
+      max_ratio_enabled: opts.stopOnComplete,
+      max_ratio: opts.stopOnComplete ? 0 : -1,
       max_ratio_act: 0, // 0 = pause/stop torrent
       preallocate_all: false,
     };
+
+    if (opts.proxyEnabled !== undefined) {
+      if (!opts.proxyEnabled || !opts.proxyHost || opts.proxyType === 'none') {
+        prefs.proxy_type = 'None';
+      } else {
+        prefs.proxy_type = opts.proxyType === 'socks5' ? 'SOCKS5' : 'HTTP';
+        prefs.proxy_ip = opts.proxyHost;
+        prefs.proxy_port = opts.proxyPort ?? 1080;
+        const hasAuth = Boolean(opts.proxyUsername);
+        prefs.proxy_auth_enabled = hasAuth;
+        prefs.proxy_username = opts.proxyUsername || '';
+        prefs.proxy_password = opts.proxyPassword || '';
+        prefs.proxy_bittorrent = true;
+        prefs.proxy_misc = true;
+        prefs.proxy_hostname_lookup = true;
+      }
+    }
+
+    if (opts.defaultTrackers && opts.defaultTrackers.length > 0) {
+      prefs.add_trackers_enabled = true;
+      prefs.add_trackers = opts.defaultTrackers.join('\n');
+    }
+
     const body = new URLSearchParams({ json: JSON.stringify(prefs) });
     await this.request('/api/v2/app/setPreferences', {
       method: 'POST',

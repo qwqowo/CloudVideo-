@@ -15,6 +15,18 @@ export interface PrimaryVideoInfo {
   existsOnDisk: boolean;
 }
 
+export interface TmdbMeta {
+  tmdbId: number;
+  mediaType: 'movie' | 'tv' | string;
+  title: string;
+  originalTitle: string;
+  year: string;
+  overview: string;
+  rating: number;
+  posterUrl: string;
+  backdropUrl: string;
+}
+
 export interface TorrentSummary {
   hash: string;
   name: string;
@@ -38,6 +50,9 @@ export interface TorrentSummary {
   playableCount: number;
   primaryVideo: PrimaryVideoInfo | null;
   watchProgress: number;
+  bingeMode: boolean;
+  bingeWindow: number;
+  tmdb: TmdbMeta | null;
 }
 
 export interface TorrentsResponse {
@@ -91,11 +106,18 @@ export interface AudioTrack {
 
 export interface SubtitleTrack {
   id: string;
-  source: 'embedded' | 'external';
+  source: 'embedded' | 'external' | 'uploaded';
   codec: string;
   language: string;
   title: string;
   url: string;
+}
+
+export interface DownloadLiveStatus {
+  dlSpeed: number;
+  state: string;
+  fileProgress: number;
+  sequential: boolean;
 }
 
 export interface ProbeResponse {
@@ -116,6 +138,7 @@ export interface ProbeResponse {
     audioTracks: AudioTrack[];
     subtitles: SubtitleTrack[];
   };
+  downloadStatus?: DownloadLiveStatus;
   mediaItem: MediaItemRecord;
   streamToken: string;
   urls: {
@@ -124,6 +147,9 @@ export interface ProbeResponse {
     potplayer: string;
     iina: string;
     mpv: string;
+    infuse: string;
+    vlc: string;
+    nplayer: string;
   };
 }
 
@@ -134,6 +160,26 @@ export interface AppSettings {
   uploadLimitKbps: number;
   autoCleanupEnabled: boolean;
   stopSeedingOnComplete: boolean;
+  bingePreloadCount: number;
+  tmdbApiKey: string;
+  proxyEnabled: boolean;
+  proxyType: 'none' | 'http' | 'socks5';
+  proxyHost: string;
+  proxyPort: number;
+  proxyUsername: string;
+  proxyPassword: string;
+  telegramBotToken: string;
+  telegramChatId: string;
+  webhookUrl: string;
+}
+
+export interface CleanupLogRecord {
+  id: number;
+  createdAt: number;
+  torrentHash: string;
+  relativePath: string;
+  reason: string;
+  freedBytes: number;
 }
 
 export interface SpeedTestRecord {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppDatabase } from '../db.js';
 import type { IQBittorrentClient } from '../services/qbittorrent.js';
 import type { CleanupService } from '../services/cleanup.js';
+import { syncTrackersToQbit, type NotifierService } from '../services/notifier.js';
 
 const updateSettingsSchema = z.object({
   storageLimitGb: z.number().min(1).max(10000).optional(),
@@ -11,6 +12,17 @@ const updateSettingsSchema = z.object({
   uploadLimitKbps: z.number().min(0).max(1_000_000).optional(),
   autoCleanupEnabled: z.boolean().optional(),
   stopSeedingOnComplete: z.boolean().optional(),
+  bingePreloadCount: z.number().int().min(1).max(10).optional(),
+  tmdbApiKey: z.string().max(500).optional(),
+  proxyEnabled: z.boolean().optional(),
+  proxyType: z.enum(['none', 'http', 'socks5']).optional(),
+  proxyHost: z.string().max(255).optional(),
+  proxyPort: z.number().int().min(1).max(65535).optional(),
+  proxyUsername: z.string().max(128).optional(),
+  proxyPassword: z.string().max(128).optional(),
+  telegramBotToken: z.string().max(200).optional(),
+  telegramChatId: z.string().max(100).optional(),
+  webhookUrl: z.string().max(500).optional(),
 });
 
 const runCleanupSchema = z.object({
@@ -23,10 +35,11 @@ export async function registerSettingsRoutes(
     db: AppDatabase;
     qbit: IQBittorrentClient;
     cleanup: CleanupService;
+    notifier: NotifierService;
     requireAuth: (req: any, reply: any) => Promise<any>;
   }
 ): Promise<void> {
-  const { db, qbit, cleanup, requireAuth } = deps;
+  const { db, qbit, cleanup, notifier, requireAuth } = deps;
 
   app.get('/api/settings', { preHandler: requireAuth }, async () => {
     const [storage, qbitHealth] = await Promise.all([
@@ -49,7 +62,16 @@ export async function registerSettingsRoutes(
 
     let qbitSynced = false;
     try {
-      await qbit.applyPreferences(updated.uploadLimitKbps, updated.stopSeedingOnComplete);
+      await qbit.applyFullPreferences({
+        uploadLimitKbps: updated.uploadLimitKbps,
+        stopOnComplete: updated.stopSeedingOnComplete,
+        proxyEnabled: updated.proxyEnabled,
+        proxyType: updated.proxyType,
+        proxyHost: updated.proxyHost,
+        proxyPort: updated.proxyPort,
+        proxyUsername: updated.proxyUsername,
+        proxyPassword: updated.proxyPassword,
+      });
       qbitSynced = true;
     } catch {
       // qBittorrent may be temporarily offline
@@ -64,5 +86,30 @@ export async function registerSettingsRoutes(
     const forceWatchedNow = parsed.success ? parsed.data.forceWatchedNow : false;
     const result = await cleanup.runCleanupCycle({ forceWatchedNow });
     return { ok: true, ...result };
+  });
+
+  app.get('/api/cleanup/logs', { preHandler: requireAuth }, async () => {
+    return { logs: db.listCleanupLogs(60) };
+  });
+
+  app.post('/api/trackers/sync', { preHandler: requireAuth }, async (_req, reply) => {
+    try {
+      const res = await syncTrackersToQbit(db, qbit);
+      return { ok: true, ...res };
+    } catch (err) {
+      return reply.code(502).send({
+        error: 'TrackerSyncError',
+        message: err instanceof Error ? err.message : '注入公共 Tracker 失败',
+      });
+    }
+  });
+
+  app.post('/api/notifications/test', { preHandler: requireAuth }, async () => {
+    const res = await notifier.send({
+      event: 'test',
+      title: 'CloudVideo 通知链路测试',
+      message: 'Telegram / Webhook 通知已连通，后续离线下载完成后将自动推送提醒。',
+    });
+    return { ok: res.telegramSent || res.webhookSent, ...res };
   });
 }

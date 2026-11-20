@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Link2, Upload, Zap, PauseCircle } from 'lucide-react';
+import { X, Link2, Upload, Zap, PauseCircle, Repeat } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 
 interface AddTorrentModalProps {
@@ -13,6 +13,8 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
   const [magnet, setMagnet] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [sequential, setSequential] = useState(true);
+  const [bingeMode, setBingeMode] = useState(false);
+  const [bingeWindow, setBingeWindow] = useState(2);
   const [paused, setPaused] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -37,7 +39,9 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
             magnet: magnet.trim(),
             sequential,
             firstLastPiecePrio: sequential,
-            paused,
+            paused: bingeMode ? false : paused,
+            bingeMode,
+            bingeWindow,
           }),
         });
         setMagnet('');
@@ -53,7 +57,9 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
         form.append('file', file);
         form.append('sequential', String(sequential));
         form.append('firstLastPiecePrio', String(sequential));
-        form.append('paused', String(paused));
+        form.append('paused', String(bingeMode ? false : paused));
+        form.append('bingeMode', String(bingeMode));
+        form.append('bingeWindow', String(bingeWindow));
         const res = await apiFetch<{ ok: boolean; warning?: string }>('/api/torrents/upload', {
           method: 'POST',
           body: form,
@@ -167,23 +173,69 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
               </div>
             </label>
 
-            <label className="flex items-start gap-3 cursor-pointer pt-3 border-t border-white/[0.06]">
-              <input
-                type="checkbox"
-                checked={paused}
-                onChange={(e) => setPaused(e.target.checked)}
-                className="mt-0.5 accent-cyan-400"
-              />
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
-                  <PauseCircle className="w-3.5 h-3.5 text-cyan-400" />
-                  先暂停载入（适合多集大合集按需勾选）
+            <div className="pt-3 border-t border-white/[0.06]">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={bingeMode}
+                  onChange={(e) => {
+                    setBingeMode(e.target.checked);
+                    if (e.target.checked) setPaused(false);
+                  }}
+                  className="mt-0.5 accent-cyan-400"
+                />
+                <div className="flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 text-xs font-semibold text-cyan-200">
+                      <Repeat className="w-3.5 h-3.5 text-cyan-400" />
+                      小盘追剧托管（自动仅下前 N 集 + 播到 70% 预载下集）
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-500 mt-0.5">
+                    80GB+ 整季剧集神器：元数据就绪后自动只勾前几集，看完自动卸载，50GB 小盘丝滑追完全季。
+                  </p>
+                  {bingeMode && (
+                    <div className="mt-2 flex items-center gap-2 text-[11px] font-mono text-zinc-300">
+                      <span>初始预载集数：</span>
+                      {[1, 2, 3].map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setBingeWindow(n)}
+                          className={`px-2 py-0.5 border ${
+                            bingeWindow === n
+                              ? 'border-cyan-400 bg-cyan-400/20 text-cyan-200'
+                              : 'border-white/10 text-zinc-400'
+                          }`}
+                        >
+                          前 {n} 集
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <p className="text-[11px] text-zinc-500 mt-0.5">
-                  小盘建议：整季剧集先暂停解析元数据，在侧边选集抽屉中仅勾选当前想看的单集。
-                </p>
-              </div>
-            </label>
+              </label>
+            </div>
+
+            {!bingeMode && (
+              <label className="flex items-start gap-3 cursor-pointer pt-3 border-t border-white/[0.06]">
+                <input
+                  type="checkbox"
+                  checked={paused}
+                  onChange={(e) => setPaused(e.target.checked)}
+                  className="mt-0.5 accent-cyan-400"
+                />
+                <div>
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
+                    <PauseCircle className="w-3.5 h-3.5 text-zinc-400" />
+                    先暂停载入（手动进抽屉选集）
+                  </div>
+                  <p className="text-[11px] text-zinc-500 mt-0.5">
+                    若想手动挑选特定某几集，可先暂停添加。
+                  </p>
+                </div>
+              </label>
+            )}
           </div>
 
           {error && (

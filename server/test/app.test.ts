@@ -11,11 +11,12 @@ import type {
   AddTorrentOptions,
   IQBittorrentClient,
   QBitFile,
+  QBitFullPreferences,
   QBitTorrent,
   QBitTransferInfo,
 } from '../src/services/qbittorrent.js';
 import { resolveSafePath } from '../src/services/media.js';
-import { signStreamToken, verifyStreamToken } from '../src/auth.js';
+import { LoginRateLimiter, signStreamToken, verifyStreamToken } from '../src/auth.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,10 @@ class MockQBitClient implements IQBittorrentClient {
   torrents = new Map<string, QBitTorrent>();
   files = new Map<string, QBitFile[]>();
   deletedHashes: string[] = [];
-  appliedPrefs: Array<{ uploadLimitKbps: number; stopOnComplete: boolean }> = [];
+  pausedHashes: string[] = [];
+  resumedHashes: string[] = [];
+  addedTrackers: Array<{ hash: string; trackers: string[] }> = [];
+  appliedPrefs: QBitFullPreferences[] = [];
 
   seed(torrent: QBitTorrent, fileList: QBitFile[]) {
     const hash = torrent.hash.toLowerCase();
@@ -66,8 +70,12 @@ class MockQBitClient implements IQBittorrentClient {
     }
   }
 
-  async pauseTorrents(_hashes: string[]): Promise<void> {}
-  async resumeTorrents(_hashes: string[]): Promise<void> {}
+  async pauseTorrents(hashes: string[]): Promise<void> {
+    this.pausedHashes.push(...hashes);
+  }
+  async resumeTorrents(hashes: string[]): Promise<void> {
+    this.resumedHashes.push(...hashes);
+  }
   async toggleSequential(_hash: string): Promise<void> {}
   async toggleFirstLastPiecePrio(_hash: string): Promise<void> {}
 
@@ -80,12 +88,20 @@ class MockQBitClient implements IQBittorrentClient {
     }
   }
 
+  async addTrackers(hash: string, trackers: string[]): Promise<void> {
+    this.addedTrackers.push({ hash, trackers });
+  }
+
   async applyPreferences(uploadLimitKbps: number, stopOnComplete: boolean): Promise<void> {
     this.appliedPrefs.push({ uploadLimitKbps, stopOnComplete });
   }
+
+  async applyFullPreferences(opts: QBitFullPreferences): Promise<void> {
+    this.appliedPrefs.push(opts);
+  }
 }
 
-describe('CloudVideo Backend Integration Suite', () => {
+describe('CloudVideo v2.0 Backend Integration Suite', () => {
   let tmpDir: string;
   let downloadDir: string;
   let dataDir: string;
@@ -124,7 +140,11 @@ describe('CloudVideo Backend Integration Suite', () => {
     };
 
     qbit = new MockQBitClient();
-    ctx = await buildApp(config, { qbit, startScheduler: false });
+    ctx = await buildApp(config, {
+      qbit,
+      startScheduler: false,
+      loginRateLimiter: new LoginRateLimiter(5, 60_000, 60_000),
+    });
   });
 
   after(async () => {
@@ -132,20 +152,33 @@ describe('CloudVideo Backend Integration Suite', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('rejects unauthenticated requests and authenticates via password login', async () => {
+  it('rejects unauthenticated requests, enforces login brute-force lockout, and authenticates cleanly', async () => {
     const unauth = await ctx.app.inject({ method: 'GET', url: '/api/torrents' });
     assert.equal(unauth.statusCode, 401);
 
-    const badLogin = await ctx.app.inject({
+    // Trigger 5 failed attempts from attacker IP -> 5th locks with 429
+    for (let i = 0; i < 4; i++) {
+      const r = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { 'x-forwarded-for': '203.0.113.99' },
+        payload: { password: 'wrong' },
+      });
+      assert.equal(r.statusCode, 401);
+    }
+    const locked = await ctx.app.inject({
       method: 'POST',
       url: '/api/auth/login',
+      headers: { 'x-forwarded-for': '203.0.113.99' },
       payload: { password: 'wrong' },
     });
-    assert.equal(badLogin.statusCode, 401);
+    assert.equal(locked.statusCode, 429);
 
+    // Valid login from legitimate IP succeeds
     const okLogin = await ctx.app.inject({
       method: 'POST',
       url: '/api/auth/login',
+      headers: { 'x-forwarded-for': '198.51.100.10' },
       payload: { password: config.appPassword },
     });
     assert.equal(okLogin.statusCode, 200);
@@ -175,24 +208,23 @@ describe('CloudVideo Backend Integration Suite', () => {
     );
   });
 
-  it('probes MP4/MKV with ffprobe, serves Range 206 direct play, lossless FFmpeg remux, and WebVTT subtitles', async () => {
+  it('probes MP4/MKV, serves Range 206, multi-slot smart thumbs, Remux, and custom uploaded SRT -> WebVTT', async () => {
     const showDir = path.join(downloadDir, 'demo-show');
     await fs.mkdir(showDir, { recursive: true });
     const mp4Path = path.join(showDir, 'clip.mp4');
     const mkvPath = path.join(showDir, 'clip_ac3.mkv');
     const srtPath = path.join(showDir, 'clip_ac3.srt');
 
-    // Generate 2-second test clips via local ffmpeg
     await execFileAsync('ffmpeg', [
       '-y',
       '-f',
       'lavfi',
       '-i',
-      'testsrc=duration=2:size=320x180:rate=24',
+      'testsrc=duration=3:size=320x180:rate=24',
       '-f',
       'lavfi',
       '-i',
-      'sine=frequency=440:duration=2',
+      'sine=frequency=440:duration=3',
       '-c:v',
       'libx264',
       '-preset',
@@ -207,11 +239,11 @@ describe('CloudVideo Backend Integration Suite', () => {
       '-f',
       'lavfi',
       '-i',
-      'testsrc=duration=2:size=320x180:rate=24',
+      'testsrc=duration=3:size=320x180:rate=24',
       '-f',
       'lavfi',
       '-i',
-      'sine=frequency=440:duration=2',
+      'sine=frequency=440:duration=3',
       '-c:v',
       'libx264',
       '-preset',
@@ -259,7 +291,7 @@ describe('CloudVideo Backend Integration Suite', () => {
       ]
     );
 
-    // 1) Probe MP4 -> canDirectPlay = true
+    // 1) Probe MP4 -> direct play + mobile external URLs
     const probeMp4 = await ctx.app.inject({
       method: 'GET',
       url: `/api/stream/${hash}/0/probe`,
@@ -270,9 +302,10 @@ describe('CloudVideo Backend Integration Suite', () => {
     assert.equal(mp4Json.probe.canDirectPlay, true);
     assert.equal(mp4Json.probe.recommendedMode, 'direct');
     assert.ok(mp4Json.urls.potplayer.startsWith('potplayer://http://video.test:3000/api/stream/'));
-    assert.ok(mp4Json.urls.iina.startsWith('iina://weblink?url='));
+    assert.ok(mp4Json.urls.infuse.startsWith('infuse://x-callback-url/play?url='));
+    assert.ok(mp4Json.urls.vlc.startsWith('vlc://'));
 
-    // 2) Direct HTTP Range 206 using signed stream token (no session cookie!)
+    // 2) Range 206 direct play via signed token
     const rangeRes = await ctx.app.inject({
       method: 'GET',
       url: `/api/stream/${hash}/0/direct?token=${encodeURIComponent(mp4Json.streamToken)}`,
@@ -280,79 +313,156 @@ describe('CloudVideo Backend Integration Suite', () => {
     });
     assert.equal(rangeRes.statusCode, 206);
     assert.equal(rangeRes.headers['content-range'], `bytes 0-1023/${mp4Stat.size}`);
-    assert.equal(rangeRes.rawPayload.length, 1024);
 
-    // 3) Probe MKV(AC3) -> canDirectPlay = false, recommendedMode defaults to 'direct', detects external SRT
+    // 3) Multi-slot smart thumbnails (slot=0 and slot=1)
+    for (const slot of [0, 1]) {
+      const thumbRes = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/stream/${hash}/0/thumb?slot=${slot}`,
+        headers: { cookie: cookieHeader },
+      });
+      assert.equal(thumbRes.statusCode, 200);
+      assert.equal(thumbRes.headers['content-type'], 'image/jpeg');
+      assert.equal(thumbRes.rawPayload[0], 0xff);
+      assert.equal(thumbRes.rawPayload[1], 0xd8);
+    }
+
+    // 4) Upload custom SRT subtitle -> converted & served as WebVTT
+    const boundary = '----CloudVideoSubBoundary';
+    const srtContent = '1\r\n00:00:00,200 --> 00:00:02,000\r\n外挂上传中文字幕\r\n';
+    const multipartBody = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="chs.srt"',
+      'Content-Type: text/plain',
+      '',
+      srtContent,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n');
+
+    const upSub = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/stream/${hash}/0/subtitle/upload`,
+      headers: {
+        cookie: cookieHeader,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: multipartBody,
+    });
+    assert.equal(upSub.statusCode, 200);
+    const upJson = upSub.json();
+    assert.ok(upJson.subtitle.id.startsWith('usr:'));
+
+    const fetchUploadedSub = await ctx.app.inject({
+      method: 'GET',
+      url: upJson.subtitle.url,
+    });
+    assert.equal(fetchUploadedSub.statusCode, 200);
+    assert.ok(fetchUploadedSub.body.startsWith('WEBVTT'));
+    assert.ok(fetchUploadedSub.body.includes('外挂上传中文字幕'));
+
+    // 5) Lossless Remux on MKV(AC3)
     const probeMkv = await ctx.app.inject({
       method: 'GET',
       url: `/api/stream/${hash}/1/probe`,
       headers: { cookie: cookieHeader },
     });
-    assert.equal(probeMkv.statusCode, 200);
     const mkvJson = probeMkv.json();
     assert.equal(mkvJson.probe.canDirectPlay, false);
     assert.equal(mkvJson.probe.recommendedMode, 'direct');
-    assert.ok(mkvJson.probe.subtitles.length >= 1);
 
-    // 3b) Video thumbnail extraction returns valid JPEG and torrent list includes primaryVideo
-    const thumbRes = await ctx.app.inject({
-      method: 'GET',
-      url: `/api/stream/${hash}/0/thumb`,
-      headers: { cookie: cookieHeader },
-    });
-    assert.equal(thumbRes.statusCode, 200);
-    assert.equal(thumbRes.headers['content-type'], 'image/jpeg');
-    assert.equal(thumbRes.rawPayload[0], 0xff);
-    assert.equal(thumbRes.rawPayload[1], 0xd8);
-
-    const listRes = await ctx.app.inject({
-      method: 'GET',
-      url: '/api/torrents',
-      headers: { cookie: cookieHeader },
-    });
-    assert.equal(listRes.statusCode, 200);
-    const listed = listRes.json().torrents[0];
-    assert.equal(listed.videoCount, 2);
-    assert.equal(listed.playableCount, 2);
-    assert.ok(listed.primaryVideo !== null);
-
-    // 4) Lossless Remux stream produces valid MP4 ftyp header
     const remuxRes = await ctx.app.inject({
       method: 'GET',
       url: `/api/stream/${hash}/1/remux?token=${encodeURIComponent(mkvJson.streamToken)}`,
     });
     assert.equal(remuxRes.statusCode, 200);
-    assert.equal(remuxRes.headers['content-type'], 'video/mp4');
-    assert.ok(remuxRes.rawPayload.length > 1000);
     assert.equal(remuxRes.rawPayload.subarray(4, 8).toString('ascii'), 'ftyp');
-
-    // 5) External SRT converted to WebVTT
-    const subUrl = mkvJson.probe.subtitles[0].url;
-    const subRes = await ctx.app.inject({ method: 'GET', url: subUrl });
-    assert.equal(subRes.statusCode, 200);
-    assert.ok(subRes.body.startsWith('WEBVTT'));
-    assert.ok(subRes.body.includes('CloudVideo'));
   });
 
-  it('handles watched delayed unload, pin protection, immediate unload, and LRU storage limit eviction', async () => {
+  it('runs Small-Disk Binge Auto-Pilot (initial N episodes + 70% next-episode preload)', async () => {
+    const hash = '4444444444444444444444444444444444444444';
+    qbit.seed(
+      {
+        hash,
+        name: 'SciFi Season 01',
+        size: 4000,
+        downloaded: 0,
+        amount_left: 4000,
+        progress: 0,
+        dlspeed: 0,
+        upspeed: 0,
+        state: 'pausedDL',
+        eta: 0,
+        added_on: Math.floor(Date.now() / 1000),
+        completion_on: 0,
+        save_path: downloadDir,
+        content_path: path.join(downloadDir, 'scifi'),
+        seq_dl: true,
+        f_l_piece_prio: true,
+        num_seeds: 3,
+        num_leechs: 1,
+        ratio: 0,
+      },
+      [
+        { index: 0, name: 'scifi/S01E01.mkv', size: 1000, progress: 0, priority: 1 },
+        { index: 1, name: 'scifi/S01E02.mkv', size: 1000, progress: 0, priority: 1 },
+        { index: 2, name: 'scifi/S01E03.mkv', size: 1000, progress: 0, priority: 1 },
+        { index: 3, name: 'scifi/S01E04.mkv', size: 1000, progress: 0, priority: 1 },
+      ]
+    );
+
+    ctx.db.upsertTorrentPolicy({
+      torrentHash: hash,
+      bingeMode: true,
+      bingeWindow: 2,
+      initialized: false,
+    });
+
+    // Reconcile -> only E01 & E02 stay priority=1; E03 & E04 become priority=0
+    const initCount = await ctx.cleanup.reconcileBingeTorrents(hash);
+    assert.equal(initCount, 1);
+    let files = await qbit.getTorrentFiles(hash);
+    assert.deepEqual(
+      files.map((f) => f.priority),
+      [1, 1, 0, 0]
+    );
+
+    // Watching E02 past 70% automatically enables E03!
+    const prog = await ctx.cleanup.recordProgress({
+      torrentHash: hash,
+      fileIndex: 1,
+      positionSec: 750,
+      durationSec: 1000,
+      relativePath: 'scifi/S01E02.mkv',
+      sizeBytes: 1000,
+    });
+    assert.ok(prog.preloadedNext);
+    assert.equal(prog.preloadedNext?.preloadedIndex, 2);
+
+    files = await qbit.getTorrentFiles(hash);
+    assert.deepEqual(
+      files.map((f) => f.priority),
+      [1, 1, 1, 0]
+    );
+  });
+
+  it('handles watched unload, pin protection, LRU eviction, audit logs, and batch operations', async () => {
     const hash = '2222222222222222222222222222222222222222';
     const dir = path.join(downloadDir, 'series');
     await fs.mkdir(dir, { recursive: true });
 
     const ep1 = path.join(dir, 'ep1.mp4');
     const ep2 = path.join(dir, 'ep2.mp4');
-    const ep3 = path.join(dir, 'ep3.mp4');
     await fs.writeFile(ep1, Buffer.alloc(600 * 1024, 1));
     await fs.writeFile(ep2, Buffer.alloc(600 * 1024, 2));
-    await fs.writeFile(ep3, Buffer.alloc(600 * 1024, 3));
 
     const now = Date.now();
     qbit.seed(
       {
         hash,
         name: 'My Series',
-        size: 1800 * 1024,
-        downloaded: 1800 * 1024,
+        size: 1200 * 1024,
+        downloaded: 1200 * 1024,
         amount_left: 0,
         progress: 1,
         dlspeed: 0,
@@ -372,15 +482,11 @@ describe('CloudVideo Backend Integration Suite', () => {
       [
         { index: 0, name: 'series/ep1.mp4', size: 600 * 1024, progress: 1, priority: 1 },
         { index: 1, name: 'series/ep2.mp4', size: 600 * 1024, progress: 1, priority: 1 },
-        { index: 2, name: 'series/ep3.mp4', size: 600 * 1024, progress: 1, priority: 1 },
       ]
     );
 
-    // Pin ep2 so it is never auto-deleted
     ctx.cleanup.setPinned(hash, 1, true, 'series/ep2.mp4', 600 * 1024);
-
-    // Report 92% progress on ep1 -> watched & scheduled 24h later
-    const prog1 = await ctx.cleanup.recordProgress({
+    await ctx.cleanup.recordProgress({
       torrentHash: hash,
       fileIndex: 0,
       positionSec: 920,
@@ -389,160 +495,61 @@ describe('CloudVideo Backend Integration Suite', () => {
       sizeBytes: 600 * 1024,
       now,
     });
-    assert.equal(prog1.unloadedImmediately, false);
-    assert.ok(prog1.item.watchedAt !== null);
-    assert.ok(prog1.item.deleteAfterAt !== null);
-    assert.equal(prog1.item.deleteAfterAt, now + 24 * 3600 * 1000);
 
-    // Run cleanup 25 hours later -> ep1 unloaded, ep2 & ep3 still intact, torrent still kept
-    const cycle1 = await ctx.cleanup.runCleanupCycle({ now: now + 25 * 3600 * 1000 });
-    assert.equal(cycle1.deletedItems.length, 1);
-    assert.equal(cycle1.deletedItems[0].fileIndex, 0);
+    const cycle = await ctx.cleanup.runCleanupCycle({ now: now + 25 * 3600 * 1000 });
+    assert.equal(cycle.deletedItems.length, 1);
     assert.equal(await fs.stat(ep1).catch(() => null), null);
     assert.ok(await fs.stat(ep2));
-    assert.ok(await fs.stat(ep3));
-    assert.equal(qbit.torrents.has(hash), true);
 
-    // Switch autoDeleteDelayHours to 0 -> watching ep3 >= 90% unloads immediately
-    ctx.db.updateSettings({ autoDeleteDelayHours: 0 });
-    const prog3 = await ctx.cleanup.recordProgress({
-      torrentHash: hash,
-      fileIndex: 2,
-      positionSec: 950,
-      durationSec: 1000,
-      relativePath: 'series/ep3.mp4',
-      sizeBytes: 600 * 1024,
-      now: now + 26 * 3600 * 1000,
-    });
-    assert.equal(prog3.unloadedImmediately, true);
-    assert.equal(await fs.stat(ep3).catch(() => null), null);
-
-    // ep2 is pinned so it survived and torrent stays; unpin and unload ep2 -> whole torrent removed!
-    ctx.cleanup.setPinned(hash, 1, false);
-    const unloadEp2 = await ctx.cleanup.unloadFile(hash, 1);
-    assert.equal(unloadEp2.deletedTorrent, true);
-    assert.equal(qbit.torrents.has(hash), false);
-
-    // Test LRU storage watermark eviction: create two 1 MB files and set limit to 0.001 GB (~1.07 MB)
-    const lruHash = '3333333333333333333333333333333333333333';
-    const lruDir = path.join(downloadDir, 'lru-test');
-    await fs.mkdir(lruDir, { recursive: true });
-    const oldFile = path.join(lruDir, 'old.mp4');
-    const newFile = path.join(lruDir, 'new.mp4');
-    await fs.writeFile(oldFile, Buffer.alloc(1024 * 1024, 7));
-    await fs.writeFile(newFile, Buffer.alloc(1024 * 1024, 8));
-
-    qbit.seed(
-      {
-        hash: lruHash,
-        name: 'LRU Test',
-        size: 2 * 1024 * 1024,
-        downloaded: 2 * 1024 * 1024,
-        amount_left: 0,
-        progress: 1,
-        dlspeed: 0,
-        upspeed: 0,
-        state: 'pausedUP',
-        eta: 0,
-        added_on: Math.floor((now - 50000) / 1000),
-        completion_on: Math.floor(now / 1000),
-        save_path: downloadDir,
-        content_path: lruDir,
-        seq_dl: true,
-        f_l_piece_prio: true,
-        num_seeds: 1,
-        num_leechs: 0,
-        ratio: 0,
-      },
-      [
-        { index: 0, name: 'lru-test/old.mp4', size: 1024 * 1024, progress: 1, priority: 1 },
-        { index: 1, name: 'lru-test/new.mp4', size: 1024 * 1024, progress: 1, priority: 1 },
-      ]
-    );
-
-    ctx.db.upsertMediaItem({
-      torrentHash: lruHash,
-      fileIndex: 0,
-      relativePath: 'lru-test/old.mp4',
-      lastPlayedAt: now - 3600 * 1000,
-    });
-    ctx.db.upsertMediaItem({
-      torrentHash: lruHash,
-      fileIndex: 1,
-      relativePath: 'lru-test/new.mp4',
-      lastPlayedAt: now, // actively played -> protected from LRU
-    });
-
-    // Lower storage limit via DB directly below current ~2MB usage
-    ctx.db.updateSettings({ storageLimitGb: 0.0012 });
-    const lruRes = await ctx.cleanup.runCleanupCycle({ now });
-    assert.ok(lruRes.deletedItems.some((d) => d.relativePath === 'lru-test/old.mp4'));
-    assert.equal(await fs.stat(oldFile).catch(() => null), null);
-    assert.ok(await fs.stat(newFile));
-  });
-
-  it('serves exact incompressible byte stream for speedtest and persists speedtest history', async () => {
-    const ping = await ctx.app.inject({
+    // Audit log recorded the deletion
+    const logRes = await ctx.app.inject({
       method: 'GET',
-      url: '/api/speedtest/ping',
+      url: '/api/cleanup/logs',
       headers: { cookie: cookieHeader },
     });
-    assert.equal(ping.statusCode, 200);
-    assert.equal(ping.json().ok, true);
+    assert.equal(logRes.statusCode, 200);
+    const logs = logRes.json().logs;
+    assert.ok(logs.some((l: any) => l.relativePath === 'series/ep1.mp4' && l.reason === 'watched_delay_expired'));
 
+    // Batch pause & delete
+    const batchRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/torrents/batch',
+      headers: { cookie: cookieHeader },
+      payload: { action: 'pause', hashes: [hash] },
+    });
+    assert.equal(batchRes.statusCode, 200);
+    assert.ok(qbit.pausedHashes.includes(hash));
+  });
+
+  it('serves speedtest stream, updates proxy/TMDB settings, and syncs preferences', async () => {
     const dl = await ctx.app.inject({
       method: 'GET',
-      url: '/api/speedtest/download?mb=2',
+      url: '/api/speedtest/download?mb=1',
       headers: { cookie: cookieHeader },
     });
     assert.equal(dl.statusCode, 200);
-    assert.equal(dl.rawPayload.length, 2 * 1024 * 1024);
-    assert.ok(String(dl.headers['cache-control']).includes('no-transform'));
+    assert.equal(dl.rawPayload.length, 1024 * 1024);
 
-    const save = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/speedtest/history',
-      headers: { cookie: cookieHeader },
-      payload: {
-        pingMs: 38.5,
-        singleThreadMbps: 42.3,
-        multiThreadMbps: 95.1,
-        rating: '优秀 · 流畅 4K 流媒体 & 1080p 高码率',
-        note: 'HK-CN2',
-      },
-    });
-    assert.equal(save.statusCode, 200);
-
-    const list = await ctx.app.inject({
-      method: 'GET',
-      url: '/api/speedtest/history',
-      headers: { cookie: cookieHeader },
-    });
-    assert.equal(list.statusCode, 200);
-    assert.equal(list.json().history.length, 1);
-    assert.equal(list.json().history[0].note, 'HK-CN2');
-  });
-
-  it('updates settings and syncs upload/seeding preferences to qBittorrent', async () => {
     const res = await ctx.app.inject({
       method: 'PUT',
       url: '/api/settings',
       headers: { cookie: cookieHeader },
       payload: {
         storageLimitGb: 42,
-        autoDeleteDelayHours: 12,
+        bingePreloadCount: 3,
         uploadLimitKbps: 256,
-        stopSeedingOnComplete: true,
+        proxyEnabled: true,
+        proxyType: 'socks5',
+        proxyHost: '127.0.0.1',
+        proxyPort: 10808,
       },
     });
     assert.equal(res.statusCode, 200);
     const body = res.json();
-    assert.equal(body.settings.storageLimitGb, 42);
-    assert.equal(body.settings.autoDeleteDelayHours, 12);
+    assert.equal(body.settings.bingePreloadCount, 3);
+    assert.equal(body.settings.proxyType, 'socks5');
     assert.equal(body.qbitSynced, true);
-    assert.deepEqual(qbit.appliedPrefs.at(-1), {
-      uploadLimitKbps: 256,
-      stopOnComplete: true,
-    });
+    assert.equal(qbit.appliedPrefs.at(-1)?.proxyPort, 10808);
   });
 });

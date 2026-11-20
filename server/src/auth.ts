@@ -129,3 +129,64 @@ export function createAuthHook(secret: string) {
     }
   };
 }
+
+interface RateLimitEntry {
+  failures: number[];
+  lockedUntil: number;
+}
+
+export class LoginRateLimiter {
+  private entries = new Map<string, RateLimitEntry>();
+
+  constructor(
+    private maxAttempts = 5,
+    private windowMs = 10 * 60 * 1000,
+    private lockoutMs = 15 * 60 * 1000
+  ) {}
+
+  check(key: string, now = Date.now()): { allowed: boolean; retryAfterSec: number } {
+    const entry = this.entries.get(key);
+    if (!entry) return { allowed: true, retryAfterSec: 0 };
+
+    if (entry.lockedUntil > now) {
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil((entry.lockedUntil - now) / 1000)),
+      };
+    }
+
+    entry.failures = entry.failures.filter((t) => now - t < this.windowMs);
+    if (entry.failures.length === 0) {
+      this.entries.delete(key);
+    }
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  recordFailure(key: string, now = Date.now()): { locked: boolean; remainingAttempts: number; retryAfterSec: number } {
+    const entry = this.entries.get(key) ?? { failures: [], lockedUntil: 0 };
+    entry.failures = entry.failures.filter((t) => now - t < this.windowMs);
+    entry.failures.push(now);
+
+    if (entry.failures.length >= this.maxAttempts) {
+      entry.lockedUntil = now + this.lockoutMs;
+      entry.failures = [];
+      this.entries.set(key, entry);
+      return {
+        locked: true,
+        remainingAttempts: 0,
+        retryAfterSec: Math.ceil(this.lockoutMs / 1000),
+      };
+    }
+
+    this.entries.set(key, entry);
+    return {
+      locked: false,
+      remainingAttempts: this.maxAttempts - entry.failures.length,
+      retryAfterSec: 0,
+    };
+  }
+
+  recordSuccess(key: string): void {
+    this.entries.delete(key);
+  }
+}

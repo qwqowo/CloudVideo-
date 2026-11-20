@@ -10,8 +10,17 @@ async function main() {
     const settings = ctx.db.getSettings();
     for (let attempt = 0; attempt < 10; attempt++) {
       try {
-        await ctx.qbit.applyPreferences(settings.uploadLimitKbps, settings.stopSeedingOnComplete);
-        ctx.app.log.info('Synced upload/seeding preferences to qBittorrent');
+        await ctx.qbit.applyFullPreferences({
+          uploadLimitKbps: settings.uploadLimitKbps,
+          stopOnComplete: settings.stopSeedingOnComplete,
+          proxyEnabled: settings.proxyEnabled,
+          proxyType: settings.proxyType,
+          proxyHost: settings.proxyHost,
+          proxyPort: settings.proxyPort,
+          proxyUsername: settings.proxyUsername,
+          proxyPassword: settings.proxyPassword,
+        });
+        ctx.app.log.info('Synced upload/seeding/proxy preferences to qBittorrent');
         return;
       } catch {
         await new Promise((r) => setTimeout(r, 3000));

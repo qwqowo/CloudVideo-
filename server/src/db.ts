@@ -10,6 +10,17 @@ export interface AppSettings {
   uploadLimitKbps: number;
   autoCleanupEnabled: boolean;
   stopSeedingOnComplete: boolean;
+  bingePreloadCount: number;
+  tmdbApiKey: string;
+  proxyEnabled: boolean;
+  proxyType: 'none' | 'http' | 'socks5';
+  proxyHost: string;
+  proxyPort: number;
+  proxyUsername: string;
+  proxyPassword: string;
+  telegramBotToken: string;
+  telegramChatId: string;
+  webhookUrl: string;
 }
 
 export interface MediaItemRecord {
@@ -30,6 +41,48 @@ export interface MediaItemRecord {
   updatedAt: number;
 }
 
+export interface TorrentPolicyRecord {
+  torrentHash: string;
+  bingeMode: boolean;
+  bingeWindow: number;
+  initialized: boolean;
+  completedNotified: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CleanupLogRecord {
+  id: number;
+  createdAt: number;
+  torrentHash: string;
+  relativePath: string;
+  reason: string;
+  freedBytes: number;
+}
+
+export interface TmdbCacheRecord {
+  torrentHash: string;
+  tmdbId: number | null;
+  mediaType: string;
+  title: string;
+  originalTitle: string;
+  year: string;
+  overview: string;
+  rating: number;
+  posterUrl: string;
+  backdropUrl: string;
+  fetchedAt: number;
+}
+
+export interface CustomSubtitleRecord {
+  id: number;
+  torrentHash: string;
+  fileIndex: number;
+  title: string;
+  filePath: string;
+  createdAt: number;
+}
+
 export interface SpeedTestRecord {
   id: number;
   createdAt: number;
@@ -47,7 +100,20 @@ export class AppDatabase {
   constructor(dbPath: string, defaults: AppConfig['defaults']) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
-    this.defaults = { ...defaults };
+    this.defaults = {
+      ...defaults,
+      bingePreloadCount: 2,
+      tmdbApiKey: process.env.TMDB_API_KEY || '',
+      proxyEnabled: false,
+      proxyType: 'none',
+      proxyHost: '',
+      proxyPort: 1080,
+      proxyUsername: '',
+      proxyPassword: '',
+      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
+      telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
+      webhookUrl: process.env.WEBHOOK_URL || '',
+    };
     this.init();
   }
 
@@ -78,6 +144,48 @@ export class AppDatabase {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (torrent_hash, file_index)
+      );
+
+      CREATE TABLE IF NOT EXISTS torrent_policies (
+        torrent_hash TEXT PRIMARY KEY,
+        binge_mode INTEGER NOT NULL DEFAULT 0,
+        binge_window INTEGER NOT NULL DEFAULT 2,
+        initialized INTEGER NOT NULL DEFAULT 0,
+        completed_notified INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cleanup_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        torrent_hash TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        freed_bytes INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS tmdb_cache (
+        torrent_hash TEXT PRIMARY KEY,
+        tmdb_id INTEGER,
+        media_type TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        original_title TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        overview TEXT NOT NULL DEFAULT '',
+        rating REAL NOT NULL DEFAULT 0,
+        poster_url TEXT NOT NULL DEFAULT '',
+        backdrop_url TEXT NOT NULL DEFAULT '',
+        fetched_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS custom_subtitles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        torrent_hash TEXT NOT NULL,
+        file_index INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS speed_tests (
@@ -114,6 +222,14 @@ export class AppDatabase {
       if (v === undefined) return fallback;
       return v === 'true' || v === '1';
     };
+    const str = (key: string, fallback: string): string => {
+      const v = map.get(key);
+      return v === undefined ? fallback : v;
+    };
+
+    const rawProxyType = str('proxyType', this.defaults.proxyType);
+    const proxyType: AppSettings['proxyType'] =
+      rawProxyType === 'http' || rawProxyType === 'socks5' ? rawProxyType : 'none';
 
     return {
       storageLimitGb: Math.max(0.0001, num('storageLimitGb', this.defaults.storageLimitGb)),
@@ -122,6 +238,17 @@ export class AppDatabase {
       uploadLimitKbps: Math.max(0, num('uploadLimitKbps', this.defaults.uploadLimitKbps)),
       autoCleanupEnabled: bool('autoCleanupEnabled', this.defaults.autoCleanupEnabled),
       stopSeedingOnComplete: bool('stopSeedingOnComplete', this.defaults.stopSeedingOnComplete),
+      bingePreloadCount: Math.min(10, Math.max(1, Math.round(num('bingePreloadCount', this.defaults.bingePreloadCount)))),
+      tmdbApiKey: str('tmdbApiKey', this.defaults.tmdbApiKey),
+      proxyEnabled: bool('proxyEnabled', this.defaults.proxyEnabled),
+      proxyType,
+      proxyHost: str('proxyHost', this.defaults.proxyHost),
+      proxyPort: Math.min(65535, Math.max(1, Math.round(num('proxyPort', this.defaults.proxyPort)))),
+      proxyUsername: str('proxyUsername', this.defaults.proxyUsername),
+      proxyPassword: str('proxyPassword', this.defaults.proxyPassword),
+      telegramBotToken: str('telegramBotToken', this.defaults.telegramBotToken),
+      telegramChatId: str('telegramChatId', this.defaults.telegramChatId),
+      webhookUrl: str('webhookUrl', this.defaults.webhookUrl),
     };
   }
 
@@ -129,21 +256,29 @@ export class AppDatabase {
     const stmt = this.db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
     );
-    const entries: Array<[string, string]> = [];
-    if (partial.storageLimitGb !== undefined) entries.push(['storageLimitGb', String(partial.storageLimitGb)]);
-    if (partial.autoDeleteDelayHours !== undefined)
-      entries.push(['autoDeleteDelayHours', String(partial.autoDeleteDelayHours)]);
-    if (partial.watchedThreshold !== undefined)
-      entries.push(['watchedThreshold', String(partial.watchedThreshold)]);
-    if (partial.uploadLimitKbps !== undefined)
-      entries.push(['uploadLimitKbps', String(partial.uploadLimitKbps)]);
-    if (partial.autoCleanupEnabled !== undefined)
-      entries.push(['autoCleanupEnabled', String(partial.autoCleanupEnabled)]);
-    if (partial.stopSeedingOnComplete !== undefined)
-      entries.push(['stopSeedingOnComplete', String(partial.stopSeedingOnComplete)]);
-
-    for (const [k, v] of entries) {
-      stmt.run(k, v);
+    const keys: Array<keyof AppSettings> = [
+      'storageLimitGb',
+      'autoDeleteDelayHours',
+      'watchedThreshold',
+      'uploadLimitKbps',
+      'autoCleanupEnabled',
+      'stopSeedingOnComplete',
+      'bingePreloadCount',
+      'tmdbApiKey',
+      'proxyEnabled',
+      'proxyType',
+      'proxyHost',
+      'proxyPort',
+      'proxyUsername',
+      'proxyPassword',
+      'telegramBotToken',
+      'telegramChatId',
+      'webhookUrl',
+    ];
+    for (const k of keys) {
+      if (partial[k] !== undefined) {
+        stmt.run(k, String(partial[k]));
+      }
     }
     return this.getSettings();
   }
@@ -269,11 +404,277 @@ export class AppDatabase {
   }
 
   deleteTorrentRecords(torrentHash: string): void {
-    this.db
-      .prepare('DELETE FROM media_items WHERE torrent_hash = ?')
-      .run(torrentHash.toLowerCase());
+    const h = torrentHash.toLowerCase();
+    this.db.prepare('DELETE FROM media_items WHERE torrent_hash = ?').run(h);
+    this.db.prepare('DELETE FROM torrent_policies WHERE torrent_hash = ?').run(h);
+    this.db.prepare('DELETE FROM tmdb_cache WHERE torrent_hash = ?').run(h);
+    this.db.prepare('DELETE FROM custom_subtitles WHERE torrent_hash = ?').run(h);
   }
 
+  // ---- Torrent Policies (Binge Mode & Completion Notifications) ----
+  getTorrentPolicy(torrentHash: string): TorrentPolicyRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM torrent_policies WHERE torrent_hash = ?')
+      .get(torrentHash.toLowerCase()) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      torrentHash: String(row.torrent_hash),
+      bingeMode: Boolean(row.binge_mode),
+      bingeWindow: Number(row.binge_window || 2),
+      initialized: Boolean(row.initialized),
+      completedNotified: Boolean(row.completed_notified),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  listTorrentPolicies(): TorrentPolicyRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM torrent_policies ORDER BY updated_at DESC')
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      torrentHash: String(row.torrent_hash),
+      bingeMode: Boolean(row.binge_mode),
+      bingeWindow: Number(row.binge_window || 2),
+      initialized: Boolean(row.initialized),
+      completedNotified: Boolean(row.completed_notified),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  upsertTorrentPolicy(input: {
+    torrentHash: string;
+    bingeMode?: boolean;
+    bingeWindow?: number;
+    initialized?: boolean;
+    completedNotified?: boolean;
+  }): TorrentPolicyRecord {
+    const hash = input.torrentHash.toLowerCase();
+    const now = Date.now();
+    const existing = this.getTorrentPolicy(hash);
+    const next: TorrentPolicyRecord = {
+      torrentHash: hash,
+      bingeMode: input.bingeMode ?? existing?.bingeMode ?? false,
+      bingeWindow: input.bingeWindow ?? existing?.bingeWindow ?? 2,
+      initialized: input.initialized ?? existing?.initialized ?? false,
+      completedNotified: input.completedNotified ?? existing?.completedNotified ?? false,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO torrent_policies (
+          torrent_hash, binge_mode, binge_window, initialized, completed_notified, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(torrent_hash) DO UPDATE SET
+          binge_mode = excluded.binge_mode,
+          binge_window = excluded.binge_window,
+          initialized = excluded.initialized,
+          completed_notified = excluded.completed_notified,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        next.torrentHash,
+        next.bingeMode ? 1 : 0,
+        next.bingeWindow,
+        next.initialized ? 1 : 0,
+        next.completedNotified ? 1 : 0,
+        next.createdAt,
+        next.updatedAt
+      );
+    return next;
+  }
+
+  // ---- Cleanup Audit Logs ----
+  addCleanupLog(entry: {
+    torrentHash: string;
+    relativePath: string;
+    reason: string;
+    freedBytes: number;
+    createdAt?: number;
+  }): CleanupLogRecord {
+    const createdAt = entry.createdAt ?? Date.now();
+    const res = this.db
+      .prepare(
+        `INSERT INTO cleanup_logs (created_at, torrent_hash, relative_path, reason, freed_bytes)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(createdAt, entry.torrentHash.toLowerCase(), entry.relativePath, entry.reason, entry.freedBytes);
+    return {
+      id: Number(res.lastInsertRowid),
+      createdAt,
+      torrentHash: entry.torrentHash.toLowerCase(),
+      relativePath: entry.relativePath,
+      reason: entry.reason,
+      freedBytes: entry.freedBytes,
+    };
+  }
+
+  listCleanupLogs(limit = 50): CleanupLogRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM cleanup_logs ORDER BY created_at DESC LIMIT ?')
+      .all(limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      createdAt: Number(r.created_at),
+      torrentHash: String(r.torrent_hash),
+      relativePath: String(r.relative_path),
+      reason: String(r.reason),
+      freedBytes: Number(r.freed_bytes || 0),
+    }));
+  }
+
+  // ---- TMDB Cache ----
+  getTmdbCache(torrentHash: string): TmdbCacheRecord | null {
+    const r = this.db
+      .prepare('SELECT * FROM tmdb_cache WHERE torrent_hash = ?')
+      .get(torrentHash.toLowerCase()) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      torrentHash: String(r.torrent_hash),
+      tmdbId: r.tmdb_id === null ? null : Number(r.tmdb_id),
+      mediaType: String(r.media_type || ''),
+      title: String(r.title || ''),
+      originalTitle: String(r.original_title || ''),
+      year: String(r.year || ''),
+      overview: String(r.overview || ''),
+      rating: Number(r.rating || 0),
+      posterUrl: String(r.poster_url || ''),
+      backdropUrl: String(r.backdrop_url || ''),
+      fetchedAt: Number(r.fetched_at),
+    };
+  }
+
+  listTmdbCache(): Map<string, TmdbCacheRecord> {
+    const rows = this.db.prepare('SELECT * FROM tmdb_cache').all() as Array<Record<string, unknown>>;
+    const map = new Map<string, TmdbCacheRecord>();
+    for (const r of rows) {
+      const rec: TmdbCacheRecord = {
+        torrentHash: String(r.torrent_hash),
+        tmdbId: r.tmdb_id === null ? null : Number(r.tmdb_id),
+        mediaType: String(r.media_type || ''),
+        title: String(r.title || ''),
+        originalTitle: String(r.original_title || ''),
+        year: String(r.year || ''),
+        overview: String(r.overview || ''),
+        rating: Number(r.rating || 0),
+        posterUrl: String(r.poster_url || ''),
+        backdropUrl: String(r.backdrop_url || ''),
+        fetchedAt: Number(r.fetched_at),
+      };
+      map.set(rec.torrentHash, rec);
+    }
+    return map;
+  }
+
+  upsertTmdbCache(rec: TmdbCacheRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO tmdb_cache (
+          torrent_hash, tmdb_id, media_type, title, original_title, year, overview,
+          rating, poster_url, backdrop_url, fetched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(torrent_hash) DO UPDATE SET
+          tmdb_id = excluded.tmdb_id,
+          media_type = excluded.media_type,
+          title = excluded.title,
+          original_title = excluded.original_title,
+          year = excluded.year,
+          overview = excluded.overview,
+          rating = excluded.rating,
+          poster_url = excluded.poster_url,
+          backdrop_url = excluded.backdrop_url,
+          fetched_at = excluded.fetched_at`
+      )
+      .run(
+        rec.torrentHash.toLowerCase(),
+        rec.tmdbId,
+        rec.mediaType,
+        rec.title,
+        rec.originalTitle,
+        rec.year,
+        rec.overview,
+        rec.rating,
+        rec.posterUrl,
+        rec.backdropUrl,
+        rec.fetchedAt
+      );
+  }
+
+  deleteTmdbCache(torrentHash: string): void {
+    this.db.prepare('DELETE FROM tmdb_cache WHERE torrent_hash = ?').run(torrentHash.toLowerCase());
+  }
+
+  // ---- Custom Uploaded Subtitles ----
+  addCustomSubtitle(entry: {
+    torrentHash: string;
+    fileIndex: number;
+    title: string;
+    filePath: string;
+  }): CustomSubtitleRecord {
+    const createdAt = Date.now();
+    const res = this.db
+      .prepare(
+        `INSERT INTO custom_subtitles (torrent_hash, file_index, title, file_path, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(entry.torrentHash.toLowerCase(), entry.fileIndex, entry.title, entry.filePath, createdAt);
+    return {
+      id: Number(res.lastInsertRowid),
+      torrentHash: entry.torrentHash.toLowerCase(),
+      fileIndex: entry.fileIndex,
+      title: entry.title,
+      filePath: entry.filePath,
+      createdAt,
+    };
+  }
+
+  listCustomSubtitles(torrentHash: string, fileIndex?: number): CustomSubtitleRecord[] {
+    const rows =
+      fileIndex !== undefined
+        ? (this.db
+            .prepare(
+              'SELECT * FROM custom_subtitles WHERE torrent_hash = ? AND file_index = ? ORDER BY id DESC'
+            )
+            .all(torrentHash.toLowerCase(), fileIndex) as Array<Record<string, unknown>>)
+        : (this.db
+            .prepare('SELECT * FROM custom_subtitles WHERE torrent_hash = ? ORDER BY id DESC')
+            .all(torrentHash.toLowerCase()) as Array<Record<string, unknown>>);
+    return rows.map((r) => ({
+      id: Number(r.id),
+      torrentHash: String(r.torrent_hash),
+      fileIndex: Number(r.file_index),
+      title: String(r.title),
+      filePath: String(r.file_path),
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  getCustomSubtitle(id: number): CustomSubtitleRecord | null {
+    const r = this.db.prepare('SELECT * FROM custom_subtitles WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!r) return null;
+    return {
+      id: Number(r.id),
+      torrentHash: String(r.torrent_hash),
+      fileIndex: Number(r.file_index),
+      title: String(r.title),
+      filePath: String(r.file_path),
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  deleteCustomSubtitlesForFile(torrentHash: string, fileIndex: number): CustomSubtitleRecord[] {
+    const existing = this.listCustomSubtitles(torrentHash, fileIndex);
+    this.db
+      .prepare('DELETE FROM custom_subtitles WHERE torrent_hash = ? AND file_index = ?')
+      .run(torrentHash.toLowerCase(), fileIndex);
+    return existing;
+  }
+
+  // ---- Speed Tests ----
   addSpeedTest(entry: Omit<SpeedTestRecord, 'id' | 'createdAt'> & { createdAt?: number }): SpeedTestRecord {
     const createdAt = entry.createdAt ?? Date.now();
     const res = this.db

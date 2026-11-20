@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { AppConfig } from '../config.js';
 import type { AppDatabase, MediaItemRecord } from '../db.js';
 import type { IQBittorrentClient } from './qbittorrent.js';
+import type { NotifierService } from './notifier.js';
 import { isVideoFile, resolveSafePath } from './media.js';
 
 export interface StorageStats {
@@ -21,7 +22,14 @@ export interface CleanupRunResult {
   storageAfter: StorageStats;
 }
 
-const ACTIVE_PLAYBACK_PROTECT_MS = 2 * 60 * 1000; // Do not LRU-evict items actively played in last 2 min
+const ACTIVE_PLAYBACK_PROTECT_MS = 2 * 60 * 1000;
+const BINGE_PRELOAD_THRESHOLD = 0.7;
+
+export function sortVideoFilesNaturally<T extends { name: string; index: number }>(files: T[]): T[] {
+  return [...files].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+  );
+}
 
 async function sumDirectorySize(dir: string): Promise<number> {
   let total = 0;
@@ -36,12 +44,12 @@ async function sumDirectorySize(dir: string): Promise<number> {
           const st = await fs.stat(full);
           total += st.size;
         } catch {
-          // file may have been removed concurrently
+          // ignore concurrent deletion
         }
       }
     }
   } catch {
-    // directory may not exist yet
+    // ignore missing dir
   }
   return total;
 }
@@ -67,14 +75,16 @@ async function removeEmptyParentDirs(filePath: string, rootDir: string): Promise
 export class CleanupService {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private seenIncomplete = new Set<string>();
 
   constructor(
     private config: AppConfig,
     private db: AppDatabase,
-    private qbit: IQBittorrentClient
+    private qbit: IQBittorrentClient,
+    private notifier?: NotifierService
   ) {}
 
-  startScheduler(intervalMs = 60_000): void {
+  startScheduler(intervalMs = 30_000): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
       this.runCleanupCycle().catch((err) => {
@@ -121,6 +131,91 @@ export class CleanupService {
     };
   }
 
+  /**
+   * Reconciles any torrent configured with Small-Disk Binge Mode:
+   * Once metadata resolves, keeps only the first N video episodes active (priority=1)
+   * and sets remaining episodes to priority=0 before resuming download.
+   */
+  async reconcileBingeTorrents(targetHash?: string): Promise<number> {
+    let initializedCount = 0;
+    const policies = targetHash
+      ? [this.db.getTorrentPolicy(targetHash)].filter((p): p is NonNullable<typeof p> => Boolean(p))
+      : this.db.listTorrentPolicies();
+
+    for (const policy of policies) {
+      if (!policy.bingeMode || policy.initialized) continue;
+      let files: Awaited<ReturnType<IQBittorrentClient['getTorrentFiles']>> = [];
+      try {
+        files = await this.qbit.getTorrentFiles(policy.torrentHash);
+      } catch {
+        continue;
+      }
+      if (files.length === 0) continue;
+
+      const videos = sortVideoFilesNaturally(files.filter((f) => isVideoFile(f.name)));
+      if (videos.length === 0) {
+        this.db.upsertTorrentPolicy({ torrentHash: policy.torrentHash, initialized: true });
+        continue;
+      }
+
+      const windowSize = Math.max(1, policy.bingeWindow);
+      const enableIndices = videos.slice(0, windowSize).map((v) => v.index);
+      const disableIndices = videos.slice(windowSize).map((v) => v.index);
+
+      if (disableIndices.length > 0) {
+        await this.qbit.setFilePriority(policy.torrentHash, disableIndices, 0);
+      }
+      if (enableIndices.length > 0) {
+        await this.qbit.setFilePriority(policy.torrentHash, enableIndices, 1);
+      }
+
+      await this.qbit.resumeTorrents([policy.torrentHash]).catch(() => {});
+      this.db.upsertTorrentPolicy({ torrentHash: policy.torrentHash, initialized: true });
+      initializedCount++;
+    }
+
+    return initializedCount;
+  }
+
+  /**
+   * When watching an episode in a binge-mode torrent and passing 70% progress,
+   * automatically enable downloading of the next disabled episode.
+   */
+  async maybePreloadNextEpisode(
+    torrentHash: string,
+    currentFileIndex: number,
+    progress: number
+  ): Promise<{ preloadedIndex: number; preloadedName: string } | null> {
+    if (progress < BINGE_PRELOAD_THRESHOLD) return null;
+    const policy = this.db.getTorrentPolicy(torrentHash);
+    if (!policy?.bingeMode) return null;
+
+    let files: Awaited<ReturnType<IQBittorrentClient['getTorrentFiles']>> = [];
+    try {
+      files = await this.qbit.getTorrentFiles(torrentHash);
+    } catch {
+      return null;
+    }
+
+    const videos = sortVideoFilesNaturally(files.filter((f) => isVideoFile(f.name)));
+    const curPos = videos.findIndex((v) => v.index === currentFileIndex);
+    if (curPos === -1 || curPos >= videos.length - 1) return null;
+
+    for (let i = curPos + 1; i < videos.length; i++) {
+      const candidate = videos[i];
+      const rec = this.db.getMediaItem(torrentHash, candidate.index);
+      if (rec?.watchedAt || rec?.removedFile) continue;
+      if (candidate.priority === 0) {
+        await this.qbit.setFilePriority(torrentHash, [candidate.index], 1);
+        await this.qbit.resumeTorrents([torrentHash]).catch(() => {});
+        return { preloadedIndex: candidate.index, preloadedName: candidate.name };
+      }
+      // Next episode is already downloading or ready
+      return null;
+    }
+    return null;
+  }
+
   async recordProgress(params: {
     torrentHash: string;
     fileIndex: number;
@@ -129,7 +224,11 @@ export class CleanupService {
     relativePath?: string;
     sizeBytes?: number;
     now?: number;
-  }): Promise<{ item: MediaItemRecord; unloadedImmediately: boolean }> {
+  }): Promise<{
+    item: MediaItemRecord;
+    unloadedImmediately: boolean;
+    preloadedNext: { preloadedIndex: number; preloadedName: string } | null;
+  }> {
     const now = params.now ?? Date.now();
     const settings = this.db.getSettings();
     const existing = this.db.getMediaItem(params.torrentHash, params.fileIndex);
@@ -143,7 +242,7 @@ export class CleanupService {
 
     if (progress >= settings.watchedThreshold && watchedAt === null) {
       watchedAt = now;
-      if (settings.autoCleanupEnabled && !(existing?.pinned)) {
+      if (settings.autoCleanupEnabled && !existing?.pinned) {
         deleteAfterAt = now + Math.round(settings.autoDeleteDelayHours * 3600 * 1000);
       }
     }
@@ -162,18 +261,24 @@ export class CleanupService {
       now,
     });
 
+    const preloadedNext = await this.maybePreloadNextEpisode(
+      item.torrentHash,
+      item.fileIndex,
+      progress
+    ).catch(() => null);
+
     if (
       settings.autoCleanupEnabled &&
       !item.pinned &&
       item.deleteAfterAt !== null &&
       item.deleteAfterAt <= now
     ) {
-      await this.unloadFile(item.torrentHash, item.fileIndex);
+      await this.unloadFile(item.torrentHash, item.fileIndex, 'watched_immediate');
       const updated = this.db.getMediaItem(item.torrentHash, item.fileIndex) ?? item;
-      return { item: updated, unloadedImmediately: true };
+      return { item: updated, unloadedImmediately: true, preloadedNext };
     }
 
-    return { item, unloadedImmediately: false };
+    return { item, unloadedImmediately: false, preloadedNext };
   }
 
   async markWatched(
@@ -193,14 +298,21 @@ export class CleanupService {
       sizeBytes: options.sizeBytes ?? existing?.sizeBytes,
       progress: 1,
       watchedAt: existing?.watchedAt ?? now,
-      deleteAfterAt: options.immediate || settings.autoCleanupEnabled ? now + delayMs : existing?.deleteAfterAt ?? null,
+      deleteAfterAt:
+        options.immediate || settings.autoCleanupEnabled ? now + delayMs : existing?.deleteAfterAt ?? null,
       pinned: options.immediate ? false : existing?.pinned ?? false,
       lastPlayedAt: now,
       now,
     });
 
+    await this.maybePreloadNextEpisode(torrentHash, fileIndex, 1).catch(() => {});
+
     if (options.immediate || (settings.autoCleanupEnabled && !item.pinned && delayMs === 0)) {
-      await this.unloadFile(item.torrentHash, item.fileIndex);
+      await this.unloadFile(
+        item.torrentHash,
+        item.fileIndex,
+        options.immediate ? 'manual_unload' : 'watched_immediate'
+      );
       return {
         item: this.db.getMediaItem(item.torrentHash, item.fileIndex),
         unloadedImmediately: true,
@@ -210,7 +322,13 @@ export class CleanupService {
     return { item, unloadedImmediately: false };
   }
 
-  setPinned(torrentHash: string, fileIndex: number, pinned: boolean, relativePath?: string, sizeBytes?: number): MediaItemRecord {
+  setPinned(
+    torrentHash: string,
+    fileIndex: number,
+    pinned: boolean,
+    relativePath?: string,
+    sizeBytes?: number
+  ): MediaItemRecord {
     return this.db.upsertMediaItem({
       torrentHash,
       fileIndex,
@@ -231,9 +349,31 @@ export class CleanupService {
     });
   }
 
+  private async removeFileArtifacts(hash: string, fileIndex: number): Promise<void> {
+    // Clean multi-slot thumbnails
+    try {
+      const thumbDir = path.join(this.config.dataDir, 'thumbs');
+      const names = await fs.readdir(thumbDir);
+      await Promise.all(
+        names
+          .filter((n) => n.startsWith(`${hash}_${fileIndex}`))
+          .map((n) => fs.unlink(path.join(thumbDir, n)).catch(() => {}))
+      );
+    } catch {
+      // ignore
+    }
+
+    // Clean uploaded custom subtitles for this file
+    const subs = this.db.deleteCustomSubtitlesForFile(hash, fileIndex);
+    for (const s of subs) {
+      await fs.unlink(s.filePath).catch(() => {});
+    }
+  }
+
   async unloadFile(
     torrentHash: string,
-    fileIndex: number
+    fileIndex: number,
+    reason = 'manual_unload'
   ): Promise<{ freedBytes: number; deletedTorrent: boolean }> {
     const hash = torrentHash.toLowerCase();
     let freedBytes = 0;
@@ -246,10 +386,9 @@ export class CleanupService {
       if (target) {
         relativePath = target.name;
       }
-      // Stop qBittorrent from downloading this episode/file again
       await this.qbit.setFilePriority(hash, [fileIndex], 0);
     } catch {
-      // torrent might already be absent from qBittorrent
+      // torrent might already be absent
     }
 
     if (relativePath) {
@@ -275,23 +414,33 @@ export class CleanupService {
       deletedAt: Date.now(),
     });
 
-    // Remove cached thumbnail if present
-    await fs
-      .unlink(path.join(this.config.dataDir, 'thumbs', `${hash}_${fileIndex}.jpg`))
-      .catch(() => {});
+    this.db.addCleanupLog({
+      torrentHash: hash,
+      relativePath: relativePath || `#${fileIndex}`,
+      reason,
+      freedBytes,
+    });
 
-    // Check if all selected video files in this torrent are now gone -> remove whole torrent
+    await this.removeFileArtifacts(hash, fileIndex);
+
+    // Check if all video files in this torrent are now watched/removed or disabled
     let deletedTorrent = false;
     if (files.length > 0) {
+      const policy = this.db.getTorrentPolicy(hash);
       const videoFiles = files.filter((f) => isVideoFile(f.name));
       const checkList = videoFiles.length > 0 ? videoFiles : files;
       let anyRemaining = false;
 
       for (const f of checkList) {
         if (f.index === fileIndex) continue;
-        if (f.priority === 0) continue;
         const dbRec = this.db.getMediaItem(hash, f.index);
         if (dbRec?.removedFile) continue;
+        // In binge mode, keep torrent alive if there are still unwatched episodes left (even with priority=0)
+        if (policy?.bingeMode && !dbRec?.watchedAt) {
+          anyRemaining = true;
+          break;
+        }
+        if (f.priority === 0) continue;
         anyRemaining = true;
         break;
       }
@@ -310,10 +459,14 @@ export class CleanupService {
     return { freedBytes, deletedTorrent };
   }
 
-  async unloadTorrent(torrentHash: string): Promise<{ freedBytes: number }> {
+  async unloadTorrent(torrentHash: string, reason = 'manual_torrent_unload'): Promise<{ freedBytes: number }> {
     const hash = torrentHash.toLowerCase();
     let freedBytes = 0;
+    let label = hash;
     try {
+      const torrents = await this.qbit.listTorrents();
+      const found = torrents.find((t) => t.hash === hash);
+      if (found?.name) label = found.name;
       const files = await this.qbit.getTorrentFiles(hash);
       for (const f of files) {
         try {
@@ -328,10 +481,20 @@ export class CleanupService {
       // ignore
     }
 
+    const customSubs = this.db.listCustomSubtitles(hash);
+    for (const s of customSubs) {
+      await fs.unlink(s.filePath).catch(() => {});
+    }
+
     await this.qbit.deleteTorrents([hash], true);
     this.db.deleteTorrentRecords(hash);
+    this.db.addCleanupLog({
+      torrentHash: hash,
+      relativePath: label,
+      reason,
+      freedBytes,
+    });
 
-    // Sweep cached thumbnails for this torrent
     try {
       const thumbDir = path.join(this.config.dataDir, 'thumbs');
       const names = await fs.readdir(thumbDir);
@@ -341,10 +504,42 @@ export class CleanupService {
           .map((n) => fs.unlink(path.join(thumbDir, n)).catch(() => {}))
       );
     } catch {
-      // ignore if thumbs dir doesn't exist
+      // ignore
     }
 
     return { freedBytes };
+  }
+
+  private async checkDownloadNotifications(
+    activeTorrents: Awaited<ReturnType<IQBittorrentClient['listTorrents']>>
+  ): Promise<void> {
+    if (!this.notifier) return;
+    for (const t of activeTorrents) {
+      const hash = t.hash.toLowerCase();
+      if (t.progress < 1) {
+        this.seenIncomplete.add(hash);
+        continue;
+      }
+      if (!this.seenIncomplete.has(hash)) continue;
+      const policy = this.db.getTorrentPolicy(hash);
+      if (policy?.completedNotified) {
+        this.seenIncomplete.delete(hash);
+        continue;
+      }
+      this.seenIncomplete.delete(hash);
+      this.db.upsertTorrentPolicy({ torrentHash: hash, completedNotified: true });
+      const gb = (t.size / (1024 * 1024 * 1024)).toFixed(2);
+      const linkLine = this.config.publicBaseUrl ? `\n直达影院：${this.config.publicBaseUrl}` : '';
+      await this.notifier
+        .send({
+          event: 'download_complete',
+          title: '下载完成 · 可立即播放',
+          message: `片源：${t.name}\n体积：${gb} GB${linkLine}`,
+          torrentName: t.name,
+          sizeBytes: t.size,
+        })
+        .catch(() => {});
+    }
   }
 
   async runCleanupCycle(options: { forceWatchedNow?: boolean; now?: number } = {}): Promise<CleanupRunResult> {
@@ -366,7 +561,6 @@ export class CleanupService {
     try {
       const settings = this.db.getSettings();
 
-      // Sync active torrents from qBittorrent so we can sweep orphans and also find unrecorded files for LRU
       let activeTorrents: Awaited<ReturnType<IQBittorrentClient['listTorrents']>> = [];
       let qbitReachable = true;
       try {
@@ -376,6 +570,9 @@ export class CleanupService {
       }
 
       if (qbitReachable) {
+        await this.reconcileBingeTorrents().catch(() => {});
+        await this.checkDownloadNotifications(activeTorrents).catch(() => {});
+
         const activeHashSet = new Set(activeTorrents.map((t) => t.hash.toLowerCase()));
         const dbItems = this.db.listMediaItems();
         const orphanHashes = new Set<string>();
@@ -397,13 +594,14 @@ export class CleanupService {
           const dueBySchedule = item.deleteAfterAt !== null && item.deleteAfterAt <= now;
           const dueByForce = Boolean(options.forceWatchedNow && item.watchedAt !== null);
           if (dueBySchedule || dueByForce) {
-            const res = await this.unloadFile(item.torrentHash, item.fileIndex);
+            const reason = dueByForce ? 'manual_watched_cleanup' : 'watched_delay_expired';
+            const res = await this.unloadFile(item.torrentHash, item.fileIndex, reason);
             freedBytes += res.freedBytes;
             deletedItems.push({
               torrentHash: item.torrentHash,
               fileIndex: item.fileIndex,
               relativePath: item.relativePath,
-              reason: dueByForce ? 'manual_watched_cleanup' : 'watched_delay_expired',
+              reason,
             });
             if (res.deletedTorrent) deletedTorrents.push(item.torrentHash);
           }
@@ -419,7 +617,7 @@ export class CleanupService {
           torrentHash: string;
           fileIndex: number;
           relativePath: string;
-          priorityBucket: number; // 0 = scheduled, 1 = watched, 2 = LRU unwatched
+          priorityBucket: number;
           sortTime: number;
         };
 
@@ -439,7 +637,6 @@ export class CleanupService {
               continue;
             }
 
-            // Ensure file actually exists on disk
             try {
               const abs = resolveSafePath(this.config.downloadDir, f.name);
               const st = await fs.stat(abs).catch(() => null);
@@ -476,7 +673,7 @@ export class CleanupService {
 
         for (const c of candidates) {
           if (stats.usedBytes <= targetBytes) break;
-          const res = await this.unloadFile(c.torrentHash, c.fileIndex);
+          const res = await this.unloadFile(c.torrentHash, c.fileIndex, 'storage_limit_lru');
           freedBytes += res.freedBytes;
           deletedItems.push({
             torrentHash: c.torrentHash,

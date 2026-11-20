@@ -242,28 +242,38 @@ export async function probeMedia(filePath: string): Promise<MediaProbeResult> {
 
 export async function extractVideoThumbnail(
   videoPath: string,
-  outputJpgPath: string
+  outputJpgPath: string,
+  slot: 0 | 1 | 2 = 0
 ): Promise<boolean> {
   await fs.mkdir(path.dirname(outputJpgPath), { recursive: true });
 
-  const tryExtract = async (seekSec: number): Promise<boolean> => {
+  let durationSec = 0;
+  try {
+    const p = await probeMedia(videoPath);
+    durationSec = p.durationSec;
+  } catch {
+    durationSec = 0;
+  }
+
+  const slotRatios: Record<0 | 1 | 2, number> = { 0: 0.15, 1: 0.48, 2: 0.78 };
+  const targetSeek =
+    durationSec > 10
+      ? Math.max(2, Math.min(durationSec - 1, Math.round(durationSec * slotRatios[slot])))
+      : slot === 0
+      ? Math.min(1, Math.floor(durationSec * 0.2))
+      : Math.min(Math.max(0, durationSec - 0.5), Math.round(durationSec * slotRatios[slot]));
+
+  const tryExtract = async (seekSec: number, smartFilter: boolean): Promise<boolean> => {
     try {
       const args = ['-y', '-hide_banner', '-loglevel', 'error'];
       if (seekSec > 0) {
         args.push('-ss', String(seekSec));
       }
-      args.push(
-        '-i',
-        videoPath,
-        '-frames:v',
-        '1',
-        '-vf',
-        'scale=640:-2:force_original_aspect_ratio=decrease',
-        '-q:v',
-        '4',
-        outputJpgPath
-      );
-      await execFileAsync('ffmpeg', args, { timeout: 12000 });
+      const vf = smartFilter
+        ? 'thumbnail=n=24,scale=640:-2:force_original_aspect_ratio=decrease'
+        : 'scale=640:-2:force_original_aspect_ratio=decrease';
+      args.push('-i', videoPath, '-frames:v', '1', '-vf', vf, '-q:v', '4', outputJpgPath);
+      await execFileAsync('ffmpeg', args, { timeout: 14000 });
       const st = await fs.stat(outputJpgPath).catch(() => null);
       return Boolean(st && st.size > 512);
     } catch {
@@ -271,7 +281,38 @@ export async function extractVideoThumbnail(
     }
   };
 
-  if (await tryExtract(15)) return true;
-  if (await tryExtract(2)) return true;
-  return tryExtract(0);
+  if (durationSec >= 12 && (await tryExtract(targetSeek, true))) return true;
+  if (await tryExtract(targetSeek, false)) return true;
+  if (targetSeek > 0 && (await tryExtract(0, false))) return true;
+  return false;
+}
+
+export async function convertSubtitleBufferToVtt(
+  buffer: Buffer,
+  originalName: string,
+  outputVttPath: string
+): Promise<void> {
+  await fs.mkdir(path.dirname(outputVttPath), { recursive: true });
+  const ext = path.extname(originalName).toLowerCase();
+
+  if (ext === '.vtt') {
+    let text = buffer.toString('utf8').replace(/^\uFEFF/, '');
+    if (!text.trimStart().startsWith('WEBVTT')) {
+      text = `WEBVTT\n\n${text}`;
+    }
+    await fs.writeFile(outputVttPath, text, 'utf8');
+    return;
+  }
+
+  const tmpIn = `${outputVttPath}.src${ext || '.srt'}`;
+  await fs.writeFile(tmpIn, buffer);
+  try {
+    await execFileAsync(
+      'ffmpeg',
+      ['-y', '-hide_banner', '-loglevel', 'error', '-i', tmpIn, '-f', 'webvtt', outputVttPath],
+      { timeout: 10000 }
+    );
+  } finally {
+    await fs.unlink(tmpIn).catch(() => {});
+  }
 }

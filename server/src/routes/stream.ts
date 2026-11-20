@@ -13,6 +13,7 @@ import {
   verifyStreamToken,
 } from '../auth.js';
 import {
+  convertSubtitleBufferToVtt,
   extractVideoThumbnail,
   getMimeType,
   probeMedia,
@@ -105,6 +106,34 @@ export async function registerStreamRoutes(
     };
   }
 
+  async function getDownloadStatus(hash: string, fileIndex: number) {
+    try {
+      const [torrents, files] = await Promise.all([
+        qbit.listTorrents(),
+        qbit.getTorrentFiles(hash),
+      ]);
+      const t = torrents.find((item) => item.hash === hash.toLowerCase());
+      const f = files.find((item) => item.index === fileIndex);
+      return {
+        dlSpeed: t?.dlspeed ?? 0,
+        state: t?.state ?? 'unknown',
+        fileProgress: f?.progress ?? 1,
+        sequential: t?.seq_dl ?? false,
+      };
+    } catch {
+      return { dlSpeed: 0, state: 'unknown', fileProgress: 1, sequential: false };
+    }
+  }
+
+  app.get('/api/stream/:hash/:fileIndex/status', { preHandler: requireAuth }, async (req, reply) => {
+    const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
+    const idx = Number(fileIndex);
+    if (!Number.isInteger(idx) || idx < 0) {
+      return reply.code(400).send({ error: 'Bad Request' });
+    }
+    return getDownloadStatus(hash, idx);
+  });
+
   app.get('/api/stream/:hash/:fileIndex/probe', { preHandler: requireAuth }, async (req, reply) => {
     const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
     const idx = Number(fileIndex);
@@ -138,7 +167,6 @@ export async function registerStreamRoutes(
     const directUrl = `${baseUrl}/api/stream/${encodedHash}/${idx}/direct?token=${encodeURIComponent(streamToken)}`;
     const remuxUrl = `${baseUrl}/api/stream/${encodedHash}/${idx}/remux?token=${encodeURIComponent(streamToken)}`;
 
-    // Touch / record file metadata in DB
     const mediaItem = db.upsertMediaItem({
       torrentHash: hash,
       fileIndex: idx,
@@ -147,7 +175,16 @@ export async function registerStreamRoutes(
       durationSec: probe.durationSec,
     });
 
-    const subtitles = probe.subtitles.map((s) => ({
+    const uploadedSubs = db.listCustomSubtitles(hash, idx).map((s) => ({
+      id: `usr:${s.id}`,
+      source: 'uploaded' as const,
+      codec: 'webvtt',
+      language: 'zh',
+      title: `[上传] ${s.title}`,
+      url: `/api/stream/${encodedHash}/${idx}/subtitle/${encodeURIComponent(`usr:${s.id}`)}?token=${encodeURIComponent(streamToken)}`,
+    }));
+
+    const nativeSubs = probe.subtitles.map((s) => ({
       id: s.id,
       source: s.source,
       codec: s.codec,
@@ -156,14 +193,17 @@ export async function registerStreamRoutes(
       url: `/api/stream/${encodedHash}/${idx}/subtitle/${encodeURIComponent(s.id)}?token=${encodeURIComponent(streamToken)}`,
     }));
 
+    const downloadStatus = await getDownloadStatus(hash, idx);
+
     return {
       fileName: target.fileName,
       relativePath: target.relativePath,
       sizeBytes: target.size,
       probe: {
         ...probe,
-        subtitles,
+        subtitles: [...uploadedSubs, ...nativeSubs],
       },
+      downloadStatus,
       mediaItem,
       streamToken,
       urls: {
@@ -172,9 +212,74 @@ export async function registerStreamRoutes(
         potplayer: `potplayer://${directUrl}`,
         iina: `iina://weblink?url=${encodeURIComponent(directUrl)}`,
         mpv: `mpv://${directUrl}`,
+        infuse: `infuse://x-callback-url/play?url=${encodeURIComponent(directUrl)}`,
+        vlc: `vlc://${directUrl}`,
+        nplayer: `nplayer-${directUrl}`,
       },
     };
   });
+
+  app.post(
+    '/api/stream/:hash/:fileIndex/subtitle/upload',
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
+      const idx = Number(fileIndex);
+      if (!Number.isInteger(idx) || idx < 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: '无效的文件索引' });
+      }
+
+      const part = await req.file();
+      if (!part) {
+        return reply.code(400).send({ error: 'Bad Request', message: '请选择字幕文件（.srt / .ass / .vtt）' });
+      }
+
+      const ext = path.extname(part.filename || '').toLowerCase();
+      if (!['.srt', '.ass', '.ssa', '.vtt'].includes(ext)) {
+        return reply
+          .code(400)
+          .send({ error: 'UnsupportedFormat', message: '仅支持 .srt / .ass / .ssa / .vtt 字幕格式' });
+      }
+
+      const buffer = await part.toBuffer();
+      const cleanHash = hash.toLowerCase().replace(/[^a-f0-9]/g, '');
+      const outPath = path.join(
+        config.dataDir,
+        'subtitles',
+        `${cleanHash}_${idx}_${Date.now()}.vtt`
+      );
+
+      try {
+        await convertSubtitleBufferToVtt(buffer, part.filename || 'upload.srt', outPath);
+      } catch (err) {
+        return reply.code(422).send({
+          error: 'SubtitleConvertError',
+          message: `字幕解析转换失败：${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+
+      const rec = db.addCustomSubtitle({
+        torrentHash: hash,
+        fileIndex: idx,
+        title: part.filename || '外挂字幕.vtt',
+        filePath: outPath,
+      });
+
+      const streamToken = signStreamToken(config.jwtSecret, hash, idx, 12 * 3600);
+      const subId = `usr:${rec.id}`;
+      return {
+        ok: true,
+        subtitle: {
+          id: subId,
+          source: 'uploaded',
+          codec: 'webvtt',
+          language: 'zh',
+          title: `[上传] ${rec.title}`,
+          url: `/api/stream/${encodeURIComponent(hash.toLowerCase())}/${idx}/subtitle/${encodeURIComponent(subId)}?token=${encodeURIComponent(streamToken)}`,
+        },
+      };
+    }
+  );
 
   app.get('/api/stream/:hash/:fileIndex/direct', async (req, reply) => {
     const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
@@ -216,7 +321,6 @@ export async function registerStreamRoutes(
     let end = match[2] ? Number(match[2]) : totalSize - 1;
 
     if (!match[1] && match[2]) {
-      // Suffix range bytes=-500
       const suffix = Number(match[2]);
       start = Math.max(0, totalSize - suffix);
       end = totalSize - 1;
@@ -299,8 +403,6 @@ export async function registerStreamRoutes(
     reply.raw.on('close', cleanupProc);
     ffmpeg.on('exit', () => activeFfmpegProcesses.delete(ffmpeg));
     ffmpeg.on('error', () => activeFfmpegProcesses.delete(ffmpeg));
-
-    // Drain stderr so ffmpeg never blocks on pipe buffer
     ffmpeg.stderr?.resume();
 
     reply.header('Content-Type', 'video/mp4');
@@ -321,6 +423,24 @@ export async function registerStreamRoutes(
     }
     if (!(await authorizeStream(req, reply, hash, idx))) return;
 
+    reply.header('Content-Type', 'text/vtt; charset=utf-8');
+    reply.header('Cache-Control', 'no-store');
+
+    // User-uploaded custom WebVTT subtitle
+    if (subId.startsWith('usr:')) {
+      const idNum = Number(subId.slice(4));
+      if (!Number.isInteger(idNum) || idNum <= 0) {
+        return reply.code(404).send({ error: 'SubtitleNotFound' });
+      }
+      const sub = db.getCustomSubtitle(idNum);
+      if (!sub || sub.torrentHash !== hash.toLowerCase() || sub.fileIndex !== idx) {
+        return reply.code(404).send({ error: 'SubtitleNotFound' });
+      }
+      const exists = await fsp.stat(sub.filePath).catch(() => null);
+      if (!exists) return reply.code(404).send({ error: 'SubtitleNotFound' });
+      return reply.send(fs.createReadStream(sub.filePath));
+    }
+
     const target = await resolveFile(hash, idx);
     if (!target) {
       return reply.code(404).send({ error: 'NotFound' });
@@ -331,9 +451,6 @@ export async function registerStreamRoutes(
     if (!track) {
       return reply.code(404).send({ error: 'SubtitleNotFound' });
     }
-
-    reply.header('Content-Type', 'text/vtt; charset=utf-8');
-    reply.header('Cache-Control', 'no-store');
 
     if (track.source === 'external' && track.externalPath) {
       if (path.extname(track.externalPath).toLowerCase() === '.vtt') {
@@ -397,7 +514,11 @@ export async function registerStreamRoutes(
     const cleanHash = hash.toLowerCase().replace(/[^a-f0-9]/g, '');
     if (!cleanHash) return reply.code(400).send({ error: 'Bad Request' });
 
-    const thumbPath = path.join(config.dataDir, 'thumbs', `${cleanHash}_${idx}.jpg`);
+    const query = req.query as { slot?: string };
+    const rawSlot = Number(query.slot ?? 0);
+    const slot: 0 | 1 | 2 = rawSlot === 1 ? 1 : rawSlot === 2 ? 2 : 0;
+
+    const thumbPath = path.join(config.dataDir, 'thumbs', `${cleanHash}_${idx}_s${slot}.jpg`);
     const cached = await fsp.stat(thumbPath).catch(() => null);
     if (cached && cached.size > 512) {
       reply.header('Content-Type', 'image/jpeg');
@@ -410,10 +531,10 @@ export async function registerStreamRoutes(
       return reply.code(404).send({ error: 'NotReady' });
     }
 
-    const key = `${cleanHash}_${idx}`;
+    const key = `${cleanHash}_${idx}_s${slot}`;
     let job = inflightThumbs.get(key);
     if (!job) {
-      job = extractVideoThumbnail(target.absPath, thumbPath).finally(() => {
+      job = extractVideoThumbnail(target.absPath, thumbPath, slot).finally(() => {
         inflightThumbs.delete(key);
       });
       inflightThumbs.set(key, job);

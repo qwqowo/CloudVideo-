@@ -5,6 +5,7 @@ import type { AppConfig } from '../config.js';
 import type { AppDatabase } from '../db.js';
 import type { IQBittorrentClient } from '../services/qbittorrent.js';
 import type { CleanupService } from '../services/cleanup.js';
+import type { TmdbService } from '../services/tmdb.js';
 import { isVideoFile, resolveSafePath } from '../services/media.js';
 
 const addMagnetSchema = z.object({
@@ -12,11 +13,40 @@ const addMagnetSchema = z.object({
   sequential: z.boolean().optional().default(true),
   firstLastPiecePrio: z.boolean().optional().default(true),
   paused: z.boolean().optional().default(false),
+  bingeMode: z.boolean().optional().default(false),
+  bingeWindow: z.number().int().min(1).max(10).optional(),
 });
 
 const prioritySchema = z.object({
   fileIndices: z.array(z.number().int().min(0)).min(1),
   priority: z.union([z.literal(0), z.literal(1), z.literal(6), z.literal(7)]),
+});
+
+const batchSchema = z.object({
+  action: z.enum(['pause', 'resume', 'delete']),
+  hashes: z.array(z.string().min(8)).min(1),
+});
+
+const bingeToggleSchema = z.object({
+  bingeMode: z.boolean(),
+  bingeWindow: z.number().int().min(1).max(10).optional(),
+});
+
+const tmdbBindSchema = z.object({
+  clear: z.boolean().optional(),
+  candidate: z
+    .object({
+      tmdbId: z.number().int(),
+      mediaType: z.enum(['movie', 'tv']),
+      title: z.string(),
+      originalTitle: z.string().default(''),
+      year: z.string().default(''),
+      overview: z.string().default(''),
+      rating: z.number().default(0),
+      posterUrl: z.string().default(''),
+      backdropUrl: z.string().default(''),
+    })
+    .optional(),
 });
 
 const progressSchema = z.object({
@@ -40,6 +70,11 @@ const pinSchema = z.object({
   sizeBytes: z.number().min(0).optional(),
 });
 
+function extractHexHashFromMagnet(magnet: string): string | null {
+  const m = magnet.match(/xt=urn:btih:([a-fA-F0-9]{40})/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
 export async function registerTorrentRoutes(
   app: FastifyInstance,
   deps: {
@@ -47,10 +82,11 @@ export async function registerTorrentRoutes(
     db: AppDatabase;
     qbit: IQBittorrentClient;
     cleanup: CleanupService;
+    tmdb: TmdbService;
     requireAuth: (req: any, reply: any) => Promise<any>;
   }
 ): Promise<void> {
-  const { config, db, qbit, cleanup, requireAuth } = deps;
+  const { config, db, qbit, cleanup, tmdb, requireAuth } = deps;
 
   app.get('/api/torrents', { preHandler: requireAuth }, async () => {
     const storage = await cleanup.getStorageStats();
@@ -65,6 +101,8 @@ export async function registerTorrentRoutes(
         torrents: [],
       };
     }
+
+    await cleanup.reconcileBingeTorrents().catch(() => {});
 
     const [torrents, transfer] = await Promise.all([
       qbit.listTorrents(),
@@ -85,6 +123,9 @@ export async function registerTorrentRoutes(
       byHash.set(item.torrentHash, list);
     }
 
+    const policies = new Map(db.listTorrentPolicies().map((p) => [p.torrentHash, p]));
+    const tmdbMap = db.listTmdbCache();
+
     const enriched = await Promise.all(
       torrents.map(async (t) => {
         const items = byHash.get(t.hash) || [];
@@ -94,6 +135,7 @@ export async function registerTorrentRoutes(
         const nextDeleteAt = activeScheduled.length > 0 ? Math.min(...activeScheduled) : null;
         const watchedCount = items.filter((i) => i.watchedAt !== null).length;
         const pinnedCount = items.filter((i) => i.pinned).length;
+        const policy = policies.get(t.hash);
 
         let videoCount = 0;
         let playableCount = 0;
@@ -128,7 +170,6 @@ export async function registerTorrentRoutes(
 
           const playable = checked.filter((c) => c.existsOnDisk);
           playableCount = playable.length;
-          // Prefer largest playable video (so movie main feature wins over sample.mp4), else first video
           const best =
             playable.sort((a, b) => b.f.size - a.f.size)[0] ||
             checked.sort((a, b) => b.f.size - a.f.size)[0];
@@ -145,6 +186,24 @@ export async function registerTorrentRoutes(
         } catch {
           // metadata may still be resolving
         }
+
+        // Kick off background TMDB scrape if API key is configured
+        tmdb.scheduleAutoMatch(t.hash, t.name, videoCount);
+        const tmdbRec = tmdbMap.get(t.hash);
+        const tmdbPublic =
+          tmdbRec && tmdbRec.tmdbId !== null
+            ? {
+                tmdbId: tmdbRec.tmdbId,
+                mediaType: tmdbRec.mediaType,
+                title: tmdbRec.title,
+                originalTitle: tmdbRec.originalTitle,
+                year: tmdbRec.year,
+                overview: tmdbRec.overview,
+                rating: tmdbRec.rating,
+                posterUrl: tmdbRec.posterUrl,
+                backdropUrl: tmdbRec.backdropUrl,
+              }
+            : null;
 
         const avgWatchProgress =
           items.length > 0
@@ -174,6 +233,9 @@ export async function registerTorrentRoutes(
           playableCount,
           primaryVideo,
           watchProgress: avgWatchProgress,
+          bingeMode: policy?.bingeMode ?? false,
+          bingeWindow: policy?.bingeWindow ?? 2,
+          tmdb: tmdbPublic,
         };
       })
     );
@@ -193,6 +255,7 @@ export async function registerTorrentRoutes(
   app.get('/api/torrents/:hash/files', { preHandler: requireAuth }, async (req, reply) => {
     const { hash } = req.params as { hash: string };
     try {
+      await cleanup.reconcileBingeTorrents(hash).catch(() => {});
       const files = await qbit.getTorrentFiles(hash);
       const mediaList = db.listMediaItems(hash);
       const mediaMap = new Map(mediaList.map((m) => [m.fileIndex, m]));
@@ -247,16 +310,50 @@ export async function registerTorrentRoutes(
     if (storageBefore.usedBytes >= storageBefore.limitBytes) {
       const res = await cleanup.runCleanupCycle();
       if (res.storageAfter.usedBytes >= res.storageAfter.limitBytes) {
-        warning = '当前存储已接近或达到设定上限，建议先手动清理或勾选少量单集下载。';
+        warning = '当前存储已接近或达到设定上限，建议先手动清理或使用「追剧托管」仅下前 2 集。';
       }
     }
+
+    const settings = db.getSettings();
+    const bingeWindow = parsed.data.bingeWindow ?? settings.bingePreloadCount;
+    const beforeHashes = parsed.data.bingeMode
+      ? new Set((await qbit.listTorrents().catch(() => [])).map((t) => t.hash))
+      : null;
 
     try {
       await qbit.addMagnet(parsed.data.magnet, {
         sequential: parsed.data.sequential,
         firstLastPiecePrio: parsed.data.firstLastPiecePrio,
+        // Start paused in bingeMode only if metadata is already known; for magnets keep active briefly or register hash
         paused: parsed.data.paused,
       });
+
+      if (parsed.data.bingeMode) {
+        const directHash = extractHexHashFromMagnet(parsed.data.magnet);
+        if (directHash) {
+          db.upsertTorrentPolicy({
+            torrentHash: directHash,
+            bingeMode: true,
+            bingeWindow,
+            initialized: false,
+          });
+          await cleanup.reconcileBingeTorrents(directHash).catch(() => {});
+        } else if (beforeHashes) {
+          const after = await qbit.listTorrents().catch(() => []);
+          for (const t of after) {
+            if (!beforeHashes.has(t.hash)) {
+              db.upsertTorrentPolicy({
+                torrentHash: t.hash,
+                bingeMode: true,
+                bingeWindow,
+                initialized: false,
+              });
+              await cleanup.reconcileBingeTorrents(t.hash).catch(() => {});
+            }
+          }
+        }
+      }
+
       return { ok: true, warning };
     } catch (err) {
       return reply.code(502).send({
@@ -273,6 +370,8 @@ export async function registerTorrentRoutes(
     let sequential = true;
     let firstLastPiecePrio = true;
     let paused = false;
+    let bingeMode = false;
+    let bingeWindow = db.getSettings().bingePreloadCount;
 
     for await (const part of parts) {
       if (part.type === 'file') {
@@ -283,6 +382,11 @@ export async function registerTorrentRoutes(
         if (part.fieldname === 'sequential') sequential = val !== 'false';
         if (part.fieldname === 'firstLastPiecePrio') firstLastPiecePrio = val !== 'false';
         if (part.fieldname === 'paused') paused = val === 'true';
+        if (part.fieldname === 'bingeMode') bingeMode = val === 'true';
+        if (part.fieldname === 'bingeWindow') {
+          const n = Number(val);
+          if (Number.isInteger(n) && n >= 1 && n <= 10) bingeWindow = n;
+        }
       }
     }
 
@@ -295,16 +399,37 @@ export async function registerTorrentRoutes(
     if (storageBefore.usedBytes >= storageBefore.limitBytes) {
       const res = await cleanup.runCleanupCycle();
       if (res.storageAfter.usedBytes >= res.storageAfter.limitBytes) {
-        warning = '当前存储已接近或达到设定上限，建议先手动清理或勾选少量单集下载。';
+        warning = '当前存储已接近或达到设定上限，建议先手动清理或使用「追剧托管」仅下前 2 集。';
       }
     }
+
+    const beforeHashes = bingeMode
+      ? new Set((await qbit.listTorrents().catch(() => [])).map((t) => t.hash))
+      : null;
 
     try {
       await qbit.addTorrentFile(fileBuffer, filename, {
         sequential,
         firstLastPiecePrio,
-        paused,
+        paused: paused || bingeMode, // Pause briefly for .torrent so binge selector trims episodes before download starts
       });
+
+      if (bingeMode && beforeHashes) {
+        await new Promise((r) => setTimeout(r, 350));
+        const after = await qbit.listTorrents().catch(() => []);
+        for (const t of after) {
+          if (!beforeHashes.has(t.hash)) {
+            db.upsertTorrentPolicy({
+              torrentHash: t.hash,
+              bingeMode: true,
+              bingeWindow,
+              initialized: false,
+            });
+            await cleanup.reconcileBingeTorrents(t.hash).catch(() => {});
+          }
+        }
+      }
+
       return { ok: true, warning };
     } catch (err) {
       return reply.code(502).send({
@@ -312,6 +437,85 @@ export async function registerTorrentRoutes(
         message: err instanceof Error ? err.message : '上传种子文件失败',
       });
     }
+  });
+
+  app.post('/api/torrents/batch', { preHandler: requireAuth }, async (req, reply) => {
+    const parsed = batchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Bad Request', message: '批量操作参数无效' });
+    }
+    const hashes = parsed.data.hashes.map((h) => h.toLowerCase());
+    let freedBytes = 0;
+
+    if (parsed.data.action === 'pause') {
+      await qbit.pauseTorrents(hashes);
+    } else if (parsed.data.action === 'resume') {
+      await qbit.resumeTorrents(hashes);
+    } else {
+      for (const h of hashes) {
+        const r = await cleanup.unloadTorrent(h, 'batch_manual_unload');
+        freedBytes += r.freedBytes;
+      }
+    }
+
+    return { ok: true, count: hashes.length, freedBytes };
+  });
+
+  app.post('/api/torrents/:hash/binge', { preHandler: requireAuth }, async (req, reply) => {
+    const { hash } = req.params as { hash: string };
+    const parsed = bingeToggleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Bad Request', message: '参数无效' });
+    }
+    const policy = db.upsertTorrentPolicy({
+      torrentHash: hash,
+      bingeMode: parsed.data.bingeMode,
+      bingeWindow: parsed.data.bingeWindow ?? db.getSettings().bingePreloadCount,
+      initialized: !parsed.data.bingeMode,
+    });
+    if (parsed.data.bingeMode) {
+      await cleanup.reconcileBingeTorrents(hash).catch(() => {});
+    }
+    return { ok: true, policy };
+  });
+
+  app.get('/api/tmdb/search', { preHandler: requireAuth }, async (req, reply) => {
+    const query = (req.query as { q?: string; year?: string }) || {};
+    if (!query.q || !query.q.trim()) {
+      return reply.code(400).send({ error: 'Bad Request', message: '请输入搜索关键词' });
+    }
+    if (!db.getSettings().tmdbApiKey.trim()) {
+      return reply.code(400).send({
+        error: 'TmdbNotConfigured',
+        message: '请先在「存储策略 -> TMDB 刮削」中填入 TMDB API Key 或 Read Token',
+      });
+    }
+    try {
+      const results = await tmdb.searchCandidates(query.q, query.year);
+      return { results };
+    } catch (err) {
+      return reply.code(502).send({
+        error: 'TmdbError',
+        message: err instanceof Error ? err.message : 'TMDB 查询失败',
+      });
+    }
+  });
+
+  app.post('/api/torrents/:hash/tmdb', { preHandler: requireAuth }, async (req, reply) => {
+    const { hash } = req.params as { hash: string };
+    const parsed = tmdbBindSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Bad Request', message: '参数无效' });
+    }
+    if (parsed.data.clear) {
+      db.deleteTmdbCache(hash);
+      return { ok: true, tmdb: null };
+    }
+    if (!parsed.data.candidate) {
+      return reply.code(400).send({ error: 'Bad Request', message: '缺少匹配候选' });
+    }
+    const rec = tmdb.bindManualMatch(hash, parsed.data.candidate);
+    return { ok: true, tmdb: rec };
   });
 
   app.post('/api/torrents/:hash/files/priority', { preHandler: requireAuth }, async (req, reply) => {
@@ -365,11 +569,10 @@ export async function registerTorrentRoutes(
 
   app.delete('/api/torrents/:hash', { preHandler: requireAuth }, async (req) => {
     const { hash } = req.params as { hash: string };
-    const res = await cleanup.unloadTorrent(hash);
+    const res = await cleanup.unloadTorrent(hash, 'manual_torrent_unload');
     return { ok: true, ...res };
   });
 
-  // Playback progress & auto-uninstall controls
   app.post('/api/media/progress', { preHandler: requireAuth }, async (req, reply) => {
     const parsed = progressSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -422,9 +625,9 @@ export async function registerTorrentRoutes(
     const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
     const idx = Number(fileIndex);
     if (!Number.isInteger(idx) || idx < 0) {
-      return reply.code(400).send({ error: 'Bad Request', message: '参数无效' });
+      return reply.code(400).send({ error: 'Bad Request', message: '无效的文件索引' });
     }
-    const res = await cleanup.unloadFile(hash, idx);
+    const res = await cleanup.unloadFile(hash, idx, 'manual_unload');
     return { ok: true, ...res };
   });
 }
