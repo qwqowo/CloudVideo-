@@ -275,6 +275,11 @@ export class CleanupService {
       deletedAt: Date.now(),
     });
 
+    // Remove cached thumbnail if present
+    await fs
+      .unlink(path.join(this.config.dataDir, 'thumbs', `${hash}_${fileIndex}.jpg`))
+      .catch(() => {});
+
     // Check if all selected video files in this torrent are now gone -> remove whole torrent
     let deletedTorrent = false;
     if (files.length > 0) {
@@ -325,6 +330,20 @@ export class CleanupService {
 
     await this.qbit.deleteTorrents([hash], true);
     this.db.deleteTorrentRecords(hash);
+
+    // Sweep cached thumbnails for this torrent
+    try {
+      const thumbDir = path.join(this.config.dataDir, 'thumbs');
+      const names = await fs.readdir(thumbDir);
+      await Promise.all(
+        names
+          .filter((n) => n.startsWith(`${hash}_`))
+          .map((n) => fs.unlink(path.join(thumbDir, n)).catch(() => {}))
+      );
+    } catch {
+      // ignore if thumbs dir doesn't exist
+    }
+
     return { freedBytes };
   }
 

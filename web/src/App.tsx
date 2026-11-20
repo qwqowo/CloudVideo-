@@ -72,8 +72,8 @@ export const App: React.FC = () => {
 
   if (authState === 'checking') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#070b14] text-slate-400 text-sm">
-        正在初始化 CloudVideo...
+      <div className="min-h-screen flex items-center justify-center text-xs font-mono tracking-[0.22em] text-cyan-400">
+        INITIALIZING DECK...
       </div>
     );
   }
@@ -95,10 +95,10 @@ export const App: React.FC = () => {
       transfer={data?.transfer ?? { dlSpeed: 0, upSpeed: 0 }}
     >
       {banner && (
-        <div className="mb-4 rounded-xl bg-amber-500/10 border border-amber-500/30 px-4 py-2.5 text-xs text-amber-200 flex items-center justify-between">
-          <span>{banner}</span>
+        <div className="mb-4 border border-amber-500/40 bg-amber-950/30 px-4 py-2.5 text-xs font-mono text-amber-200 flex items-center justify-between">
+          <span>WARN // {banner}</span>
           <button onClick={() => setBanner('')} className="text-amber-300 hover:underline">
-            关闭
+            DISMISS
           </button>
         </div>
       )}

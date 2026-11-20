@@ -7,6 +7,14 @@ export interface StorageStats {
   pendingDeleteCount: number;
 }
 
+export interface PrimaryVideoInfo {
+  index: number;
+  name: string;
+  size: number;
+  progress: number;
+  existsOnDisk: boolean;
+}
+
 export interface TorrentSummary {
   hash: string;
   name: string;
@@ -26,6 +34,10 @@ export interface TorrentSummary {
   nextDeleteAt: number | null;
   watchedCount: number;
   pinnedCount: number;
+  videoCount: number;
+  playableCount: number;
+  primaryVideo: PrimaryVideoInfo | null;
+  watchProgress: number;
 }
 
 export interface TorrentsResponse {

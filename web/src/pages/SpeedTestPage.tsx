@@ -178,118 +178,117 @@ export const SpeedTestPage: React.FC = () => {
     .join(' ');
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border border-slate-800/90 bg-slate-900/75 p-5 sm:p-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-5">
+      <div className="hud-panel p-5 sm:p-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-white/[0.07]">
           <div>
-            <h1 className="text-lg font-bold text-white flex items-center gap-2">
-              <Gauge className="w-5 h-5 text-indigo-400" />
-              节点带宽与 1080p / 4K 流畅度测速
+            <div className="text-[10px] font-mono tracking-[0.22em] text-cyan-400">
+              TELEMETRY // LINK BENCHMARK
+            </div>
+            <h1 className="text-base sm:text-lg font-semibold text-white mt-0.5">
+              节点带宽与 1080P / 4K 流畅度诊断
             </h1>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1">
-              纯内存随机不可压缩数据流直出，真实测试「服务器 ↔ 你当前节点」的单线程（浏览器看片）与 4 线程（本地播放器缓冲）吞吐。
+            <p className="text-xs text-zinc-400 mt-1">
+              纯内存不可压缩随机流直出，实测「服务器 ↔ 当前节点」单线程（网页原生直出）与 4 线程（本地播放器缓冲）吞吐。
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             <input
               type="text"
               value={nodeNote}
               onChange={(e) => setNodeNote(e.target.value)}
-              placeholder="备注节点名（如 香港CN2 / 直连）"
+              placeholder="节点备注 (如 香港CN2 / 直连)"
               disabled={running}
-              className="rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs sm:text-sm text-white placeholder-slate-500 w-52 focus:outline-none focus:ring-2 focus:ring-indigo-500/60"
+              className="bg-[#05070a] border border-white/10 px-3 py-2 text-xs font-mono text-white placeholder-zinc-600 w-48 focus:outline-none focus:border-cyan-400/60"
             />
             <select
               value={singleMb}
               onChange={(e) => setSingleMb(Number(e.target.value))}
               disabled={running}
-              className="rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs sm:text-sm text-slate-200"
+              className="bg-[#05070a] border border-white/10 px-3 py-2 text-xs font-mono text-zinc-200"
             >
-              <option value={15}>轻量测试 (15 MB)</option>
-              <option value={25}>标准测试 (25 MB)</option>
-              <option value={50}>晚高峰压测 (50 MB)</option>
+              <option value={15}>15 MB 轻测</option>
+              <option value={25}>25 MB 标准</option>
+              <option value={50}>50 MB 压测</option>
             </select>
             <button
               onClick={() => void runTest()}
               disabled={running}
-              className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-semibold text-white transition"
+              className="flex items-center gap-1.5 px-5 py-2 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-xs font-mono font-bold tracking-wider text-zinc-950 transition"
             >
-              <Play className="w-4 h-4 fill-current" />
-              {running ? '测速中...' : '开始测速'}
+              <Play className="w-3.5 h-3.5 fill-current" />
+              {running ? 'TESTING...' : 'START TEST'}
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="mt-4 rounded-xl bg-rose-500/10 border border-rose-500/30 px-4 py-2.5 text-xs text-rose-300">
-            {error}
+          <div className="mt-4 border border-rose-500/40 bg-rose-950/40 px-4 py-2 text-xs font-mono text-rose-300">
+            ERR // {error}
           </div>
         )}
 
-        {/* Live Metrics */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6">
-          <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-4">
-            <div className="text-xs text-slate-400 flex items-center gap-1.5">
+        {/* Metrics Readout */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5">
+          <div className="border border-white/[0.08] bg-[#06090e] p-4">
+            <div className="text-[10px] font-mono tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
               <Wifi className="w-3.5 h-3.5 text-amber-400" />
-              往返延迟 (Ping)
+              LATENCY // RTT
             </div>
-            <div className="text-2xl font-bold font-mono text-white mt-1.5">
-              {pingMs > 0 ? `${pingMs} ms` : stage === 'ping' ? '测试中...' : '--'}
-            </div>
-          </div>
-
-          <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-4">
-            <div className="text-xs text-slate-400 flex items-center gap-1.5">
-              <Activity className="w-3.5 h-3.5 text-sky-400" />
-              单线程下行（网页看片核心指标）
-            </div>
-            <div className="text-2xl font-bold font-mono text-sky-300 mt-1.5">
-              {singleMbps > 0 ? `${singleMbps} Mbps` : stage === 'single' ? '测试中...' : '--'}
-            </div>
-            <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-              {singleMbps > 0 ? `≈ ${(singleMbps / 8).toFixed(2)} MB/s` : '决定浏览器直连流畅度'}
+            <div className="text-2xl font-mono font-bold text-white mt-2">
+              {pingMs > 0 ? `${pingMs} ms` : stage === 'ping' ? 'PINGING...' : '--'}
             </div>
           </div>
 
-          <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-4">
-            <div className="text-xs text-slate-400 flex items-center gap-1.5">
+          <div className="border border-white/[0.08] bg-[#06090e] p-4">
+            <div className="text-[10px] font-mono tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-cyan-400" />
+              1-THREAD // WEB DIRECT
+            </div>
+            <div className="text-2xl font-mono font-bold text-cyan-300 mt-2">
+              {singleMbps > 0 ? `${singleMbps} Mbps` : stage === 'single' ? 'SAMPLING...' : '--'}
+            </div>
+            <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+              {singleMbps > 0 ? `≈ ${(singleMbps / 8).toFixed(2)} MB/s` : '网页原生直出核心指标'}
+            </div>
+          </div>
+
+          <div className="border border-white/[0.08] bg-[#06090e] p-4">
+            <div className="text-[10px] font-mono tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
               <Gauge className="w-3.5 h-3.5 text-emerald-400" />
-              4 线程并发（本地播放器缓冲上限）
+              4-THREAD // PLAYER BURST
             </div>
-            <div className="text-2xl font-bold font-mono text-emerald-300 mt-1.5">
-              {multiMbps > 0 ? `${multiMbps} Mbps` : stage === 'multi' ? '测试中...' : '--'}
+            <div className="text-2xl font-mono font-bold text-emerald-300 mt-2">
+              {multiMbps > 0 ? `${multiMbps} Mbps` : stage === 'multi' ? 'SAMPLING...' : '--'}
             </div>
-            <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-              {multiMbps > 0 ? `≈ ${(multiMbps / 8).toFixed(2)} MB/s` : 'PotPlayer / MPV / Infuse 参考'}
+            <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+              {multiMbps > 0 ? `≈ ${(multiMbps / 8).toFixed(2)} MB/s` : 'PotPlayer / MPV / Infuse 上限'}
             </div>
           </div>
         </div>
 
-        {/* Realtime Single-Thread Stability Chart */}
+        {/* Oscilloscope Waveform */}
         {samples.length > 1 && (
-          <div className="mt-5 rounded-xl bg-slate-950/80 border border-slate-800 p-4">
-            <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-              <span>单线程瞬时速率波动曲线（判断晚高峰是否丢包抖动）</span>
-              <span className="font-mono">峰值参考：{maxSampleMbps.toFixed(1)} Mbps</span>
+          <div className="mt-5 border border-white/[0.08] bg-[#05080c] sci-grid-bg p-4">
+            <div className="flex items-center justify-between text-[10px] font-mono tracking-wider text-zinc-400 mb-2">
+              <span>SIGNAL TRACE // 1-THREAD STABILITY</span>
+              <span className="text-cyan-300">PEAK {maxSampleMbps.toFixed(1)} Mbps</span>
             </div>
             <svg viewBox="0 0 600 145" className="w-full h-36 overflow-visible">
               <defs>
-                <linearGradient id="speedGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6366f1" stopOpacity="0.45" />
-                  <stop offset="100%" stopColor="#6366f1" stopOpacity="0.02" />
+                <linearGradient id="cyanTrace" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.35" />
+                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.01" />
                 </linearGradient>
               </defs>
-              <line x1="0" y1="35" x2="600" y2="35" stroke="#1e293b" strokeDasharray="4 4" />
-              <line x1="0" y1="85" x2="600" y2="85" stroke="#1e293b" strokeDasharray="4 4" />
-              <polygon
-                fill="url(#speedGrad)"
-                points={`0,140 ${chartPoints} 600,140`}
-              />
+              <line x1="0" y1="35" x2="600" y2="35" stroke="rgba(255,255,255,0.06)" strokeDasharray="3 3" />
+              <line x1="0" y1="85" x2="600" y2="85" stroke="rgba(255,255,255,0.06)" strokeDasharray="3 3" />
+              <polygon fill="url(#cyanTrace)" points={`0,140 ${chartPoints} 600,140`} />
               <polyline
                 fill="none"
-                stroke="#818cf8"
-                strokeWidth="2.5"
+                stroke="#22d3ee"
+                strokeWidth="2"
                 strokeLinejoin="round"
                 points={chartPoints}
               />
@@ -297,33 +296,35 @@ export const SpeedTestPage: React.FC = () => {
           </div>
         )}
 
-        {/* Verdict */}
+        {/* Verdict Matrix */}
         {verdict && (
-          <div className="mt-5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 space-y-3">
+          <div className="mt-5 border border-cyan-400/35 bg-cyan-950/20 p-4 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="text-sm font-bold text-white">{verdict.rating}</div>
-              <div className="text-xs text-indigo-200">{verdict.summary}</div>
+              <div className="text-xs sm:text-sm font-mono font-bold text-cyan-200">
+                {verdict.rating}
+              </div>
+              <div className="text-xs text-zinc-300">{verdict.summary}</div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               {[
-                { label: '1080p 流媒体 (4–10M)', ok: verdict.tiers.p1080Web },
-                { label: '1080p 高码率 Remux (30M)', ok: verdict.tiers.p1080Remux },
-                { label: '4K 流媒体 Web-DL (25M)', ok: verdict.tiers.p4kWeb },
-                { label: '4K 原盘 Remux (75M+)', ok: verdict.tiers.p4kRemux },
+                { label: '1080P WEB (4–10M)', ok: verdict.tiers.p1080Web },
+                { label: '1080P REMUX (30M)', ok: verdict.tiers.p1080Remux },
+                { label: '4K WEB-DL (25M)', ok: verdict.tiers.p4kWeb },
+                { label: '4K REMUX (75M+)', ok: verdict.tiers.p4kRemux },
               ].map((t) => (
                 <div
                   key={t.label}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs ${
+                  className={`flex items-center gap-2 px-3 py-2 border text-[11px] font-mono ${
                     t.ok
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
-                      : 'bg-slate-900/80 border-slate-800 text-slate-400'
+                      ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                      : 'bg-[#06090e] border-white/[0.07] text-zinc-500'
                   }`}
                 >
                   {t.ok ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   ) : (
-                    <XCircle className="w-4 h-4 text-slate-500 shrink-0" />
+                    <XCircle className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
                   )}
                   <span>{t.label}</span>
                 </div>
@@ -333,46 +334,48 @@ export const SpeedTestPage: React.FC = () => {
         )}
       </div>
 
-      {/* History Table */}
-      <div className="rounded-2xl border border-slate-800/90 bg-slate-900/75 p-5">
-        <h2 className="text-sm font-semibold text-white mb-3">历史节点测速对比</h2>
+      {/* History Log */}
+      <div className="hud-panel p-5">
+        <div className="text-[10px] font-mono tracking-[0.2em] text-zinc-500 mb-3">
+          LOG // HISTORICAL NODE BENCHMARKS
+        </div>
         {history.length === 0 ? (
-          <div className="text-xs text-slate-500 py-6 text-center">
-            暂无测速记录，切换不同节点后多次测速即可直观对比晚高峰速度。
+          <div className="text-xs font-mono text-zinc-600 py-6 text-center">
+            NO RECORDS YET
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="text-slate-400 border-b border-slate-800">
+            <table className="w-full text-left text-xs font-mono">
+              <thead className="text-[10px] text-zinc-500 border-b border-white/[0.08]">
                 <tr>
-                  <th className="py-2 pr-3">时间</th>
-                  <th className="py-2 pr-3">节点备注</th>
-                  <th className="py-2 pr-3">延迟</th>
-                  <th className="py-2 pr-3">单线程</th>
-                  <th className="py-2 pr-3">4 线程</th>
-                  <th className="py-2 pr-3">结论</th>
-                  <th className="py-2 text-right">操作</th>
+                  <th className="py-2 pr-3">TIMESTAMP</th>
+                  <th className="py-2 pr-3">NODE</th>
+                  <th className="py-2 pr-3">RTT</th>
+                  <th className="py-2 pr-3">1-THREAD</th>
+                  <th className="py-2 pr-3">4-THREAD</th>
+                  <th className="py-2 pr-3">CLASS</th>
+                  <th className="py-2 text-right">DEL</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 text-slate-200">
+              <tbody className="divide-y divide-white/[0.05] text-zinc-200">
                 {history.map((r) => (
-                  <tr key={r.id}>
-                    <td className="py-2.5 pr-3 text-slate-400 whitespace-nowrap">
+                  <tr key={r.id} className="hover:bg-white/[0.02]">
+                    <td className="py-2.5 pr-3 text-zinc-500 whitespace-nowrap">
                       {new Date(r.createdAt).toLocaleString()}
                     </td>
-                    <td className="py-2.5 pr-3 font-medium">{r.note || '--'}</td>
-                    <td className="py-2.5 pr-3 font-mono">{r.pingMs} ms</td>
-                    <td className="py-2.5 pr-3 font-mono text-sky-300">
+                    <td className="py-2.5 pr-3">{r.note || '--'}</td>
+                    <td className="py-2.5 pr-3">{r.pingMs} ms</td>
+                    <td className="py-2.5 pr-3 text-cyan-300">
                       {r.singleThreadMbps} Mbps ({(r.singleThreadMbps / 8).toFixed(1)} MB/s)
                     </td>
-                    <td className="py-2.5 pr-3 font-mono text-emerald-300">
+                    <td className="py-2.5 pr-3 text-emerald-300">
                       {r.multiThreadMbps} Mbps ({(r.multiThreadMbps / 8).toFixed(1)} MB/s)
                     </td>
-                    <td className="py-2.5 pr-3">{r.rating}</td>
+                    <td className="py-2.5 pr-3 text-zinc-300">{r.rating}</td>
                     <td className="py-2.5 text-right">
                       <button
                         onClick={() => void handleDeleteRecord(r.id)}
-                        className="p-1 rounded text-slate-500 hover:text-rose-400"
+                        className="p-1 text-zinc-600 hover:text-rose-400"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

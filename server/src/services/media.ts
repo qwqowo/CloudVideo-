@@ -225,7 +225,7 @@ export async function probeMedia(filePath: string): Promise<MediaProbeResult> {
     audioCodec: primaryAudioCodec,
     container: ext.replace(/^\./, '') || data.format?.format_name || 'unknown',
     canDirectPlay: direct,
-    recommendedMode: direct ? 'direct' : 'remux',
+    recommendedMode: 'direct',
     requiredMbps: Number(((bitrateBps / 1_000_000) * 1.25).toFixed(2)),
     audioTracks,
     subtitles: [...externalSubs, ...embeddedSubs],
@@ -238,4 +238,40 @@ export async function probeMedia(filePath: string): Promise<MediaProbeResult> {
   probeCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, result });
 
   return result;
+}
+
+export async function extractVideoThumbnail(
+  videoPath: string,
+  outputJpgPath: string
+): Promise<boolean> {
+  await fs.mkdir(path.dirname(outputJpgPath), { recursive: true });
+
+  const tryExtract = async (seekSec: number): Promise<boolean> => {
+    try {
+      const args = ['-y', '-hide_banner', '-loglevel', 'error'];
+      if (seekSec > 0) {
+        args.push('-ss', String(seekSec));
+      }
+      args.push(
+        '-i',
+        videoPath,
+        '-frames:v',
+        '1',
+        '-vf',
+        'scale=640:-2:force_original_aspect_ratio=decrease',
+        '-q:v',
+        '4',
+        outputJpgPath
+      );
+      await execFileAsync('ffmpeg', args, { timeout: 12000 });
+      const st = await fs.stat(outputJpgPath).catch(() => null);
+      return Boolean(st && st.size > 512);
+    } catch {
+      return false;
+    }
+  };
+
+  if (await tryExtract(15)) return true;
+  if (await tryExtract(2)) return true;
+  return tryExtract(0);
 }

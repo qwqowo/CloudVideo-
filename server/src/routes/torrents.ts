@@ -85,36 +85,98 @@ export async function registerTorrentRoutes(
       byHash.set(item.torrentHash, list);
     }
 
-    const enriched = torrents.map((t) => {
-      const items = byHash.get(t.hash) || [];
-      const activeScheduled = items
-        .filter((i) => !i.removedFile && !i.pinned && i.deleteAfterAt !== null)
-        .map((i) => i.deleteAfterAt as number);
-      const nextDeleteAt = activeScheduled.length > 0 ? Math.min(...activeScheduled) : null;
-      const watchedCount = items.filter((i) => i.watchedAt !== null).length;
-      const pinnedCount = items.filter((i) => i.pinned).length;
+    const enriched = await Promise.all(
+      torrents.map(async (t) => {
+        const items = byHash.get(t.hash) || [];
+        const activeScheduled = items
+          .filter((i) => !i.removedFile && !i.pinned && i.deleteAfterAt !== null)
+          .map((i) => i.deleteAfterAt as number);
+        const nextDeleteAt = activeScheduled.length > 0 ? Math.min(...activeScheduled) : null;
+        const watchedCount = items.filter((i) => i.watchedAt !== null).length;
+        const pinnedCount = items.filter((i) => i.pinned).length;
 
-      return {
-        hash: t.hash,
-        name: t.name,
-        size: t.size,
-        totalSize: t.total_size ?? t.size,
-        downloaded: t.downloaded,
-        progress: t.progress,
-        dlSpeed: t.dlspeed,
-        upSpeed: t.upspeed,
-        state: t.state,
-        eta: t.eta,
-        addedOn: t.added_on * 1000,
-        sequential: t.seq_dl,
-        firstLastPiecePrio: t.f_l_piece_prio,
-        numSeeds: t.num_seeds,
-        numLeechs: t.num_leechs,
-        nextDeleteAt,
-        watchedCount,
-        pinnedCount,
-      };
-    });
+        let videoCount = 0;
+        let playableCount = 0;
+        let primaryVideo: {
+          index: number;
+          name: string;
+          size: number;
+          progress: number;
+          existsOnDisk: boolean;
+        } | null = null;
+
+        try {
+          const files = await qbit.getTorrentFiles(t.hash);
+          const videoFiles = files.filter((f) => isVideoFile(f.name));
+          videoCount = videoFiles.length;
+
+          const checked = await Promise.all(
+            videoFiles.map(async (f) => {
+              let existsOnDisk = false;
+              if (f.priority > 0) {
+                try {
+                  const abs = resolveSafePath(config.downloadDir, f.name);
+                  const st = await fs.stat(abs);
+                  existsOnDisk = st.isFile() && st.size > 0;
+                } catch {
+                  existsOnDisk = false;
+                }
+              }
+              return { f, existsOnDisk };
+            })
+          );
+
+          const playable = checked.filter((c) => c.existsOnDisk);
+          playableCount = playable.length;
+          // Prefer largest playable video (so movie main feature wins over sample.mp4), else first video
+          const best =
+            playable.sort((a, b) => b.f.size - a.f.size)[0] ||
+            checked.sort((a, b) => b.f.size - a.f.size)[0];
+
+          if (best) {
+            primaryVideo = {
+              index: best.f.index,
+              name: best.f.name,
+              size: best.f.size,
+              progress: best.f.progress,
+              existsOnDisk: best.existsOnDisk,
+            };
+          }
+        } catch {
+          // metadata may still be resolving
+        }
+
+        const avgWatchProgress =
+          items.length > 0
+            ? Number((items.reduce((acc, i) => acc + i.progress, 0) / items.length).toFixed(3))
+            : 0;
+
+        return {
+          hash: t.hash,
+          name: t.name,
+          size: t.size,
+          totalSize: t.total_size ?? t.size,
+          downloaded: t.downloaded,
+          progress: t.progress,
+          dlSpeed: t.dlspeed,
+          upSpeed: t.upspeed,
+          state: t.state,
+          eta: t.eta,
+          addedOn: t.added_on * 1000,
+          sequential: t.seq_dl,
+          firstLastPiecePrio: t.f_l_piece_prio,
+          numSeeds: t.num_seeds,
+          numLeechs: t.num_leechs,
+          nextDeleteAt,
+          watchedCount,
+          pinnedCount,
+          videoCount,
+          playableCount,
+          primaryVideo,
+          watchProgress: avgWatchProgress,
+        };
+      })
+    );
 
     return {
       qbitConnected: true,

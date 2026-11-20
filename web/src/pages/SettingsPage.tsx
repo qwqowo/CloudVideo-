@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { HardDrive, Save, Trash2, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Save, Trash2, RefreshCw, ShieldCheck } from 'lucide-react';
 import type { AppSettings, StorageStats } from '../types';
 import { apiFetch, formatBytes } from '../lib/api';
 
@@ -50,8 +50,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
       setStorage(res.storage);
       setMessage(
         res.qbitSynced
-          ? '设置已保存，并已同步限速与停种规则到 qBittorrent。'
-          : '设置已保存（qBittorrent 当前离线，上线后将自动同步）。'
+          ? '配置已保存并同步至 qBittorrent 引擎。'
+          : '配置已保存（qBittorrent 当前离线，恢复连接后自动同步）。'
       );
       onUpdated();
     } catch (err) {
@@ -83,7 +83,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
       setMessage(
         res.deletedItems.length > 0
           ? `清理完成：卸载 ${res.deletedItems.length} 个文件，释放 ${formatBytes(res.freedBytes)}。`
-          : '当前没有到期或超水位的待清理文件。'
+          : '当前无到期或超水位的待卸载文件。'
       );
       onUpdated();
     } catch (err) {
@@ -94,51 +94,56 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
   };
 
   if (!settings) {
-    return <div className="text-sm text-slate-400 p-8 text-center">加载配置中...</div>;
+    return <div className="text-xs font-mono text-zinc-500 p-12 text-center">LOADING SYS CONFIG...</div>;
   }
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <div className="rounded-2xl border border-slate-800/90 bg-slate-900/75 p-5 sm:p-6">
-        <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
+    <div className="max-w-3xl mx-auto space-y-5">
+      <div className="hud-panel p-5 sm:p-6">
+        <div className="flex items-start justify-between gap-3 flex-wrap pb-5 border-b border-white/[0.07]">
           <div>
-            <h1 className="text-lg font-bold text-white flex items-center gap-2">
-              <HardDrive className="w-5 h-5 text-indigo-400" />
-              小盘自动卸载与存储策略
+            <div className="text-[10px] font-mono tracking-[0.22em] text-cyan-400">
+              SYSTEM // STORAGE LIFECYCLE
+            </div>
+            <h1 className="text-base sm:text-lg font-semibold text-white mt-0.5">
+              小盘自动卸载与水位策略
             </h1>
-            <p className="text-xs text-slate-400 mt-1">
-              专为 50–60 GB VPS 设计：看完自动卸载 + 磁盘硬水位 LRU 保护，防止爆盘宕机。
+            <p className="text-xs text-zinc-400 mt-1">
+              播放完成自动定时卸载 + 磁盘上限 LRU 保护，避免 50–60 GB 服务器爆盘。
             </p>
           </div>
-          <div className="text-xs px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
-            qBittorrent：{qbitInfo.connected ? `已连接 (${qbitInfo.version})` : '未连接'}
+          <div className="text-[11px] font-mono px-2.5 py-1 border border-white/10 bg-[#05070a] text-zinc-300">
+            ENGINE:{' '}
+            <span className={qbitInfo.connected ? 'text-emerald-400' : 'text-amber-400'}>
+              {qbitInfo.connected ? `ONLINE (${qbitInfo.version})` : 'OFFLINE'}
+            </span>
           </div>
         </div>
 
         {storage && (
-          <div className="mb-6 rounded-xl bg-slate-950/80 border border-slate-800 p-4 space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-400">当前视频目录占用</span>
-              <span className="font-mono text-white">
+          <div className="my-5 border border-white/[0.08] bg-[#06090e] p-4 space-y-2">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="text-zinc-500">DOWNLOAD VOLUME USAGE</span>
+              <span className="text-white">
                 {formatBytes(storage.usedBytes)} / {formatBytes(storage.limitBytes)} (
                 {storage.usagePercent}%)
               </span>
             </div>
-            <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+            <div className="h-[3px] w-full bg-zinc-800">
               <div
-                className={`h-full rounded-full ${
+                className={`h-full ${
                   storage.usagePercent >= 90
                     ? 'bg-rose-500'
                     : storage.usagePercent >= 75
                     ? 'bg-amber-400'
-                    : 'bg-indigo-500'
+                    : 'bg-cyan-400'
                 }`}
                 style={{ width: `${Math.min(100, storage.usagePercent)}%` }}
               />
             </div>
             {storage.diskFreeBytes > 0 && (
-              <div className="text-[11px] text-slate-400">
-                宿主机分区剩余可用空间：{formatBytes(storage.diskFreeBytes)} / 总计{' '}
+              <div className="text-[11px] font-mono text-zinc-500">
+                宿主机分区真实剩余：{formatBytes(storage.diskFreeBytes)} / 总计{' '}
                 {formatBytes(storage.diskTotalBytes)}
               </div>
             )}
@@ -148,8 +153,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
         <form onSubmit={handleSave} className="space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                视频存储水位上限 (GB)
+              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+                STORAGE LIMIT (GB)
               </label>
               <input
                 type="number"
@@ -160,16 +165,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                 onChange={(e) =>
                   setSettings({ ...settings, storageLimitGb: Math.max(1, Number(e.target.value)) })
                 }
-                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm text-white"
+                className="w-full bg-[#05070a] border border-white/10 px-3.5 py-2 text-sm font-mono text-white focus:outline-none focus:border-cyan-400/60"
               />
-              <p className="text-[11px] text-slate-400 mt-1">
-                50–60 GB 硬盘建议设为 40–45 GB，超出将按 LRU 自动淘汰至 85% 安全水位。
+              <p className="text-[11px] text-zinc-500 mt-1">
+                50–60 GB 硬盘建议设为 40–45 GB，超限自动 LRU 淘汰至 85%。
               </p>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                “已看完”判定进度阈值 (%)
+              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+                WATCHED THRESHOLD (%)
               </label>
               <input
                 type="number"
@@ -183,34 +188,34 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                     watchedThreshold: Math.min(0.99, Math.max(0.5, Number(e.target.value) / 100)),
                   })
                 }
-                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm text-white"
+                className="w-full bg-[#05070a] border border-white/10 px-3.5 py-2 text-sm font-mono text-white focus:outline-none focus:border-cyan-400/60"
               />
-              <p className="text-[11px] text-slate-400 mt-1">
-                默认 90%（片尾字幕出现即视为看完，触发自动卸载倒计时）。
+              <p className="text-[11px] text-zinc-500 mt-1">
+                默认 90%，达到即触发自动卸载倒计时。
               </p>
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">
-              看完后自动卸载缓冲时间（小时，0 = 看完立刻删除）
+            <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+              AUTO-PURGE DELAY (HOURS · 0 = IMMEDIATE)
             </label>
-            <div className="flex items-center gap-2 flex-wrap mb-2">
+            <div className="flex items-center gap-2 flex-wrap mb-2.5">
               {[
-                { label: '0h (立即卸载)', val: 0 },
-                { label: '2 小时', val: 2 },
-                { label: '12 小时', val: 12 },
-                { label: '24 小时 (推荐)', val: 24 },
-                { label: '72 小时', val: 72 },
+                { label: '0h 立即卸载', val: 0 },
+                { label: '2h', val: 2 },
+                { label: '12h', val: 12 },
+                { label: '24h (推荐)', val: 24 },
+                { label: '72h', val: 72 },
               ].map((preset) => (
                 <button
                   key={preset.val}
                   type="button"
                   onClick={() => setSettings({ ...settings, autoDeleteDelayHours: preset.val })}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition ${
+                  className={`px-3 py-1.5 text-xs font-mono border transition ${
                     settings.autoDeleteDelayHours === preset.val
-                      ? 'bg-indigo-600/25 border-indigo-500 text-indigo-200'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-200'
+                      : 'bg-[#05070a] border-white/10 text-zinc-400 hover:text-zinc-200'
                   }`}
                 >
                   {preset.label}
@@ -229,14 +234,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                   autoDeleteDelayHours: Math.max(0, Number(e.target.value)),
                 })
               }
-              className="w-40 rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2 text-sm text-white"
+              className="w-40 bg-[#05070a] border border-white/10 px-3.5 py-2 text-sm font-mono text-white focus:outline-none focus:border-cyan-400/60"
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800/80">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-white/[0.07]">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                BT 上传限速 (KB/s，0 = 不限速)
+              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+                BT UPLOAD LIMIT (KB/s · 0 = UNLIMITED)
               </label>
               <input
                 type="number"
@@ -250,10 +255,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                     uploadLimitKbps: Math.max(0, Number(e.target.value)),
                   })
                 }
-                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm text-white"
+                className="w-full bg-[#05070a] border border-white/10 px-3.5 py-2 text-sm font-mono text-white focus:outline-none focus:border-cyan-400/60"
               />
-              <p className="text-[11px] text-slate-400 mt-1">
-                防止 BT 上传抢占看片带宽或消耗 VPS 月流量包。
+              <p className="text-[11px] text-zinc-500 mt-1">
+                避免 BT 上传抢占看片带宽与服务器月流量。
               </p>
             </div>
 
@@ -265,9 +270,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                   onChange={(e) =>
                     setSettings({ ...settings, autoCleanupEnabled: e.target.checked })
                   }
-                  className="rounded border-slate-600 bg-slate-800 text-indigo-500"
+                  className="accent-cyan-400"
                 />
-                <span className="text-xs sm:text-sm text-slate-200">
+                <span className="text-xs text-zinc-200">
                   启用自动卸载与磁盘水位 LRU 保护
                 </span>
               </label>
@@ -279,9 +284,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                   onChange={(e) =>
                     setSettings({ ...settings, stopSeedingOnComplete: e.target.checked })
                   }
-                  className="rounded border-slate-600 bg-slate-800 text-indigo-500"
+                  className="accent-cyan-400"
                 />
-                <span className="text-xs sm:text-sm text-slate-200">
+                <span className="text-xs text-zinc-200">
                   下载完成后自动停种（公开 BT 推荐，PT 请关闭）
                 </span>
               </label>
@@ -289,41 +294,41 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
           </div>
 
           {message && (
-            <div className="rounded-xl bg-indigo-500/10 border border-indigo-500/30 px-4 py-2.5 text-xs text-indigo-200 flex items-center gap-2">
+            <div className="border border-cyan-400/35 bg-cyan-950/30 px-4 py-2.5 text-xs font-mono text-cyan-200 flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 shrink-0" />
               {message}
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-3 flex-wrap pt-2">
+          <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/[0.07]">
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
                 disabled={cleaning}
                 onClick={() => void handleManualCleanup(false)}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition"
+                className="flex items-center gap-1.5 px-3.5 py-2 border border-white/10 hover:border-cyan-400/40 bg-white/[0.03] text-xs font-mono text-zinc-200 transition"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${cleaning ? 'animate-spin' : ''}`} />
-                立即检查到期与水位
+                立即巡检水位
               </button>
               <button
                 type="button"
                 disabled={cleaning}
                 onClick={() => void handleManualCleanup(true)}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-xs font-medium text-rose-200 transition"
+                className="flex items-center gap-1.5 px-3.5 py-2 border border-rose-500/40 bg-rose-950/40 hover:bg-rose-600 text-xs font-mono text-rose-200 hover:text-white transition"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                立即卸载所有已看视频
+                卸载全部已看
               </button>
             </div>
 
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-semibold text-white transition"
+              className="flex items-center gap-1.5 px-5 py-2 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-xs font-mono font-bold tracking-wider text-zinc-950 transition"
             >
-              <Save className="w-4 h-4" />
-              {saving ? '保存中...' : '保存设置'}
+              <Save className="w-3.5 h-3.5" />
+              {saving ? 'SAVING...' : 'SAVE CONFIG'}
             </button>
           </div>
         </form>

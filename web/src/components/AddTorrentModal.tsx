@@ -70,68 +70,73 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
-          <h2 className="text-base font-semibold text-white">添加下载任务</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
+      <div className="w-full max-w-lg hud-panel shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.08]">
+          <div>
+            <div className="text-[10px] font-mono tracking-[0.2em] text-cyan-400">
+              INGEST // TORRENT
+            </div>
+            <h2 className="text-sm font-semibold text-white mt-0.5">载入云端下载任务</h2>
+          </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+            className="p-1.5 text-zinc-400 hover:text-white border border-transparent hover:border-white/10"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-950 border border-slate-800">
+          <div className="grid grid-cols-2 border border-white/10 bg-[#05070a]">
             <button
               type="button"
               onClick={() => setMode('magnet')}
-              className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition ${
+              className={`flex items-center justify-center gap-2 py-2.5 text-xs font-mono tracking-wider transition ${
                 mode === 'magnet'
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-cyan-400/15 text-cyan-300 border-b-2 border-cyan-400'
+                  : 'text-zinc-500 hover:text-zinc-200'
               }`}
             >
-              <Link2 className="w-4 h-4" />
-              磁力链接
+              <Link2 className="w-3.5 h-3.5" />
+              MAGNET 磁力
             </button>
             <button
               type="button"
               onClick={() => setMode('file')}
-              className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition ${
+              className={`flex items-center justify-center gap-2 py-2.5 text-xs font-mono tracking-wider transition ${
                 mode === 'file'
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-cyan-400/15 text-cyan-300 border-b-2 border-cyan-400'
+                  : 'text-zinc-500 hover:text-zinc-200'
               }`}
             >
-              <Upload className="w-4 h-4" />
-              上传 .torrent
+              <Upload className="w-3.5 h-3.5" />
+              .TORRENT 文件
             </button>
           </div>
 
           {mode === 'magnet' ? (
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                Magnet 磁力链接或 HTTP 种子链接
+              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+                MAGNET URI / HTTP LINK
               </label>
               <textarea
                 rows={3}
                 value={magnet}
                 onChange={(e) => setMagnet(e.target.value)}
                 placeholder="magnet:?xt=urn:btih:..."
-                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/60"
+                className="w-full bg-[#05070a] border border-white/10 px-3.5 py-2.5 text-xs font-mono text-white placeholder-zinc-600 focus:outline-none focus:border-cyan-400/70"
               />
             </div>
           ) : (
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                选择 .torrent 文件
+              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+                TORRENT PAYLOAD
               </label>
-              <label className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-700 hover:border-indigo-500/70 bg-slate-950/60 p-6 cursor-pointer transition">
-                <Upload className="w-6 h-6 text-slate-400" />
-                <span className="text-sm text-slate-300">
-                  {file ? file.name : '点击选择或拖拽 .torrent 文件到此处'}
+              <label className="flex flex-col items-center justify-center gap-2 border border-dashed border-white/15 hover:border-cyan-400/60 bg-[#05070a] p-7 cursor-pointer transition">
+                <Upload className="w-5 h-5 text-cyan-400" />
+                <span className="text-xs font-mono text-zinc-300">
+                  {file ? file.name : '点击选择或拖拽 .torrent 文件'}
                 </span>
                 <input
                   type="file"
@@ -143,64 +148,64 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
             </div>
           )}
 
-          <div className="space-y-2.5 rounded-xl bg-slate-950/70 border border-slate-800/80 p-4">
+          <div className="space-y-3 border border-white/[0.08] bg-[#06090e] p-4">
             <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
                 checked={sequential}
                 onChange={(e) => setSequential(e.target.checked)}
-                className="mt-1 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500"
+                className="mt-0.5 accent-cyan-400"
               />
               <div>
-                <div className="flex items-center gap-1.5 text-sm font-medium text-slate-200">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
                   <Zap className="w-3.5 h-3.5 text-amber-400" />
-                  顺序下载 + 首尾优先（边下边播）
+                  顺序下载 + 首尾分片优先（边下边播）
                 </div>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  优先拉取视频头尾索引并按时间顺序下载，缓冲几秒即可开始播放。
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  优先拉取头尾索引与前段画面，缓冲数秒即可直接原生直出播放。
                 </p>
               </div>
             </label>
 
-            <label className="flex items-start gap-3 cursor-pointer pt-2 border-t border-slate-800/70">
+            <label className="flex items-start gap-3 cursor-pointer pt-3 border-t border-white/[0.06]">
               <input
                 type="checkbox"
                 checked={paused}
                 onChange={(e) => setPaused(e.target.checked)}
-                className="mt-1 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500"
+                className="mt-0.5 accent-cyan-400"
               />
               <div>
-                <div className="flex items-center gap-1.5 text-sm font-medium text-slate-200">
-                  <PauseCircle className="w-3.5 h-3.5 text-sky-400" />
-                  添加后先暂停（适合大合集手动选集）
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
+                  <PauseCircle className="w-3.5 h-3.5 text-cyan-400" />
+                  先暂停载入（适合多集大合集按需勾选）
                 </div>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  小盘建议：整季剧集可先暂停添加，展开后只勾选要看的 1–2 集再开始下载。
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  小盘建议：整季剧集先暂停解析元数据，在侧边选集抽屉中仅勾选当前想看的单集。
                 </p>
               </div>
             </label>
           </div>
 
           {error && (
-            <div className="rounded-lg bg-rose-500/10 border border-rose-500/30 px-3 py-2 text-xs text-rose-300">
-              {error}
+            <div className="border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-xs font-mono text-rose-300">
+              ERR // {error}
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-3 pt-1">
+          <div className="flex items-center justify-end gap-2.5 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-sm text-slate-300 hover:bg-slate-800 transition"
+              className="px-4 py-2 border border-white/10 text-xs font-mono text-zinc-400 hover:text-white hover:border-white/25 transition"
             >
-              取消
+              CANCEL
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-semibold text-white transition"
+              className="px-5 py-2 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-xs font-mono font-bold tracking-wider text-zinc-950 transition"
             >
-              {submitting ? '正在提交...' : '开始下载'}
+              {submitting ? 'DISPATCHING...' : 'START INGEST'}
             </button>
           </div>
         </form>

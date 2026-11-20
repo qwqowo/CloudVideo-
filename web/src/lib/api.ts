@@ -67,39 +67,133 @@ export function formatCountdown(targetMs: number | null): string {
   const diff = targetMs - Date.now();
   if (diff <= 0) return '即将卸载';
   const mins = Math.ceil(diff / 60000);
-  if (mins < 60) return `${mins} 分钟后卸载`;
+  if (mins < 60) return `${mins}m 后卸载`;
   const hours = Math.floor(mins / 60);
   const remMins = mins % 60;
-  if (hours < 24) return remMins > 0 ? `${hours} 小时 ${remMins} 分后卸载` : `${hours} 小时后卸载`;
+  if (hours < 24) return remMins > 0 ? `${hours}h ${remMins}m 后卸载` : `${hours}h 后卸载`;
   const days = Math.floor(hours / 24);
   const remHours = hours % 24;
-  return remHours > 0 ? `${days} 天 ${remHours} 小时后卸载` : `${days} 天后卸载`;
+  return remHours > 0 ? `${days}d ${remHours}h 后卸载` : `${days}d 后卸载`;
 }
 
-export function translateTorrentState(state: string): { label: string; color: string } {
+export interface ParsedMediaTitle {
+  title: string;
+  year?: string;
+  resolution?: string;
+  tags: string[];
+}
+
+export function parseMediaTitle(rawName: string): ParsedMediaTitle {
+  const base = rawName.replace(/\.[a-z0-9]{2,4}$/i, '');
+  const tags: string[] = [];
+
+  let resolution: string | undefined;
+  if (/\b(2160p|4k|uhd)\b/i.test(base)) resolution = '4K';
+  else if (/\b1080p\b/i.test(base)) resolution = '1080P';
+  else if (/\b720p\b/i.test(base)) resolution = '720P';
+
+  if (/\b(hdr10\+?|hdr|dv|dovi|dolby\.?vision)\b/i.test(base)) tags.push('HDR');
+  if (/\bremux\b/i.test(base)) tags.push('REMUX');
+  else if (/\b(blu-?ray|bdrip|bdremux)\b/i.test(base)) tags.push('BLURAY');
+  else if (/\bweb-?dl\b/i.test(base)) tags.push('WEB-DL');
+  else if (/\bwebrip\b/i.test(base)) tags.push('WEBRIP');
+
+  if (/\b(x265|h\.?265|hevc)\b/i.test(base)) tags.push('HEVC');
+  else if (/\b(x264|h\.?264|avc)\b/i.test(base)) tags.push('H264');
+  else if (/\bav1\b/i.test(base)) tags.push('AV1');
+
+  if (/\b(atmos|truehd|dts-?hd|dts|ddp5\.?1|eac3)\b/i.test(base)) tags.push('SURROUND');
+
+  const yearMatch = base.match(/(?:^|[.\s(_[-])((?:19|20)\d{2})(?:$|[.\s)_\]-])/);
+  const year = yearMatch?.[1];
+
+  // Clean display title: strip common release suffixes after resolution/source markers
+  let cleaned = base.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const cutMatch = cleaned.match(
+    /\b(2160p|1080p|720p|4k|uhd|web-?dl|webrip|blu-?ray|bdrip|remux|hdtv|x264|x265|hevc|h\.?264|h\.?265)\b/i
+  );
+  if (cutMatch && cutMatch.index && cutMatch.index > 3) {
+    cleaned = cleaned.slice(0, cutMatch.index).trim();
+  }
+  cleaned = cleaned.replace(/[-(\[]+$/, '').trim();
+
+  return {
+    title: cleaned.length >= 2 ? cleaned : base,
+    year,
+    resolution,
+    tags: tags.slice(0, 3),
+  };
+}
+
+export function translateTorrentState(state: string): {
+  label: string;
+  code: string;
+  dot: string;
+  badge: string;
+} {
   const s = state.toLowerCase();
   if (s.includes('downloading') || s === 'forceddl') {
-    return { label: '下载中', color: 'text-sky-400 bg-sky-500/15 border-sky-500/30' };
+    return {
+      label: '下载中',
+      code: 'SYNCING',
+      dot: 'bg-cyan-400 animate-pulse',
+      badge: 'text-cyan-300 bg-cyan-950/80 border-cyan-500/40',
+    };
   }
   if (s === 'metadl') {
-    return { label: '解析元数据', color: 'text-amber-300 bg-amber-500/15 border-amber-500/30' };
+    return {
+      label: '解析元数据',
+      code: 'META',
+      dot: 'bg-amber-400 animate-pulse',
+      badge: 'text-amber-300 bg-amber-950/80 border-amber-500/40',
+    };
   }
   if (s === 'stalleddl') {
-    return { label: '等待连接', color: 'text-amber-400 bg-amber-500/15 border-amber-500/30' };
+    return {
+      label: '等待节点',
+      code: 'STALLED',
+      dot: 'bg-amber-400',
+      badge: 'text-amber-300 bg-amber-950/80 border-amber-500/40',
+    };
   }
   if (s.includes('up') || s === 'uploading') {
-    return { label: '已完成/做种', color: 'text-emerald-400 bg-emerald-500/15 border-emerald-500/30' };
+    return {
+      label: '已就绪',
+      code: 'READY',
+      dot: 'bg-emerald-400',
+      badge: 'text-emerald-300 bg-emerald-950/80 border-emerald-500/40',
+    };
   }
   if (s.includes('paused') || s.includes('stopped')) {
-    return { label: '已暂停', color: 'text-slate-300 bg-slate-500/20 border-slate-500/30' };
+    return {
+      label: '已暂停',
+      code: 'STANDBY',
+      dot: 'bg-zinc-400',
+      badge: 'text-zinc-300 bg-zinc-900/90 border-zinc-700',
+    };
   }
   if (s.includes('checking')) {
-    return { label: '校验中', color: 'text-indigo-300 bg-indigo-500/15 border-indigo-500/30' };
+    return {
+      label: '校验中',
+      code: 'VERIFY',
+      dot: 'bg-cyan-300 animate-pulse',
+      badge: 'text-cyan-200 bg-cyan-950/70 border-cyan-500/30',
+    };
   }
   if (s.includes('error') || s.includes('missing')) {
-    return { label: '异常', color: 'text-rose-400 bg-rose-500/15 border-rose-500/30' };
+    return {
+      label: '异常',
+      code: 'FAULT',
+      dot: 'bg-rose-500',
+      badge: 'text-rose-300 bg-rose-950/80 border-rose-500/40',
+    };
   }
-  return { label: state, color: 'text-slate-300 bg-slate-500/20 border-slate-500/30' };
+  return {
+    label: state,
+    code: state.toUpperCase().slice(0, 8),
+    dot: 'bg-zinc-400',
+    badge: 'text-zinc-300 bg-zinc-900/90 border-zinc-700',
+  };
 }
 
 export interface BandwidthVerdict {
@@ -115,7 +209,6 @@ export interface BandwidthVerdict {
 }
 
 export function evaluateBandwidth(singleMbps: number, multiMbps: number): BandwidthVerdict {
-  // Web playback relies primarily on single-thread speed; external players benefit from multi-thread
   const effectiveWeb = singleMbps;
   const effectivePlayer = Math.max(singleMbps, multiMbps * 0.85);
 
@@ -126,31 +219,31 @@ export function evaluateBandwidth(singleMbps: number, multiMbps: number): Bandwi
 
   if (p4kRemux) {
     return {
-      rating: '极佳 · 畅享 4K 原盘/Remux',
-      summary: '当前节点单线程与并发均非常充裕，网页与本地播放器通吃 4K 高码率原盘。',
+      rating: 'CLASS-S // 畅享 4K 原盘与 Remux',
+      summary: '单线程与并发吞吐均极度充裕，网页直出与本地播放器可流畅播放高码率 4K 原盘。',
       tier: 'excellent',
       tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
     };
   }
   if (p4kWeb) {
     return {
-      rating: '优秀 · 流畅 4K 流媒体 & 1080p 高码率',
-      summary: '可稳定播放 1080p Remux 与 4K Web-DL/压制版；超高码率 4K 原盘建议用本地播放器缓冲。',
+      rating: 'CLASS-A // 流畅 4K 流媒体 & 1080P 高码率',
+      summary: '可稳定播放 1080P Remux 与 4K Web-DL；超高码率 4K 原盘建议使用本地播放器缓冲。',
       tier: 'good',
       tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
     };
   }
   if (p1080Web) {
     return {
-      rating: '良好 · 流畅 1080p 流媒体',
-      summary: '常规 1080p（4–10 Mbps）可流畅观看；高码率片源建议使用本地播放器或切换更优节点。',
+      rating: 'CLASS-B // 流畅 1080P 标准片源',
+      summary: '常规 1080P（4–10 Mbps）流畅；高码率片源建议拉起本地播放器或切换更优节点。',
       tier: 'ok',
       tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
     };
   }
   return {
-    rating: '偏慢 · 1080p 可能卡顿',
-    summary: '单线程速度偏低，建议检查服务器是否开启 BBR、避开晚高峰或切换中转节点后再试。',
+    rating: 'CLASS-C // 链路偏慢 · 1080P 可能缓冲',
+    summary: '单线程速率偏低，建议确认服务器已开启 BBR 或切换晚高峰更稳定的中转节点。',
     tier: 'poor',
     tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
   };

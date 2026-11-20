@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Film, Lock, ArrowRight } from 'lucide-react';
+import { Lock, ArrowRight, Terminal } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 
 interface LoginPageProps {
@@ -23,56 +23,84 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
       });
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败');
+      setError(err instanceof Error ? err.message : '认证失败');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950/60 px-4">
-      <div className="w-full max-w-md rounded-2xl border border-slate-800/80 bg-slate-900/80 backdrop-blur-xl p-8 shadow-2xl">
-        <div className="flex flex-col items-center text-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center mb-4 text-indigo-400">
-            <Film className="w-7 h-7" />
+    <div className="min-h-screen flex items-center justify-center px-4 relative overflow-hidden">
+      {/* Subtle architectural reticle lines */}
+      <div className="pointer-events-none fixed inset-0 flex items-center justify-center opacity-20">
+        <div className="w-[540px] h-[540px] rounded-full border border-cyan-500/20" />
+        <div className="absolute w-[760px] h-[1px] bg-gradient-to-r from-transparent via-cyan-500/30 to-transparent" />
+        <div className="absolute h-[760px] w-[1px] bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent" />
+      </div>
+
+      <div className="w-full max-w-md hud-panel p-8 shadow-2xl relative z-10">
+        <div className="flex items-center justify-between text-[10px] font-mono tracking-[0.22em] text-zinc-500 pb-5 border-b border-white/[0.06]">
+          <span className="flex items-center gap-1.5 text-cyan-400">
+            <span className="w-1.5 h-1.5 bg-cyan-400 animate-pulse" />
+            AUTH // GATEWAY
+          </span>
+          <span>NODE-01</span>
+        </div>
+
+        <div className="my-7">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 border border-cyan-400/40 bg-cyan-400/10 flex items-center justify-center text-cyan-300">
+              <Terminal className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold tracking-[0.14em] text-white uppercase">
+                CLOUDVIDEO
+              </h1>
+              <p className="text-xs font-mono text-zinc-400 mt-0.5 tracking-wide">
+                ORBITAL TORRENT MEDIA CONSOLE
+              </p>
+            </div>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">CloudVideo</h1>
-          <p className="text-sm text-slate-400 mt-1">
-            私人云端种子影院 · 边下边播 · 自动清理小盘管家
-          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1.5">访问密码</label>
+            <label className="block text-[11px] font-mono uppercase tracking-[0.16em] text-zinc-400 mb-2">
+              ACCESS KEY / 访问密码
+            </label>
             <div className="relative">
-              <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <Lock className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="输入你在 .env 中配置的 APP_PASSWORD"
+                placeholder="输入访问密钥..."
                 autoFocus
-                className="w-full rounded-xl bg-slate-950/90 border border-slate-700/80 pl-10 pr-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/60 focus:border-indigo-500"
+                className="w-full bg-[#05070a] border border-white/10 pl-10 pr-4 py-3 text-sm font-mono text-white placeholder-zinc-600 focus:outline-none focus:border-cyan-400/70 transition"
               />
             </div>
           </div>
 
           {error && (
-            <div className="rounded-lg bg-rose-500/10 border border-rose-500/30 px-3 py-2 text-xs text-rose-300">
-              {error}
+            <div className="border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-xs font-mono text-rose-300">
+              ERR // {error}
             </div>
           )}
 
           <button
             type="submit"
             disabled={loading || !password.trim()}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-4 py-3 text-sm font-semibold text-white transition"
+            className="w-full flex items-center justify-center gap-2 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 px-4 py-3 text-xs font-mono font-bold uppercase tracking-[0.18em] text-zinc-950 transition"
           >
-            {loading ? '正在验证...' : '进入影院'}
+            {loading ? 'VERIFYING...' : 'INITIALIZE SESSION'}
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
+
+        <div className="mt-6 pt-4 border-t border-white/[0.06] flex items-center justify-between text-[10px] font-mono text-zinc-600">
+          <span>DIRECT STREAM · AUTO PURGE</span>
+          <span>TLS / COOKIE AUTH</span>
+        </div>
       </div>
     </div>
   );

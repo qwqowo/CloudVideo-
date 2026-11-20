@@ -282,7 +282,7 @@ describe('CloudVideo Backend Integration Suite', () => {
     assert.equal(rangeRes.headers['content-range'], `bytes 0-1023/${mp4Stat.size}`);
     assert.equal(rangeRes.rawPayload.length, 1024);
 
-    // 3) Probe MKV(AC3) -> canDirectPlay = false, recommendedMode = 'remux', detects external SRT
+    // 3) Probe MKV(AC3) -> canDirectPlay = false, recommendedMode defaults to 'direct', detects external SRT
     const probeMkv = await ctx.app.inject({
       method: 'GET',
       url: `/api/stream/${hash}/1/probe`,
@@ -291,8 +291,30 @@ describe('CloudVideo Backend Integration Suite', () => {
     assert.equal(probeMkv.statusCode, 200);
     const mkvJson = probeMkv.json();
     assert.equal(mkvJson.probe.canDirectPlay, false);
-    assert.equal(mkvJson.probe.recommendedMode, 'remux');
+    assert.equal(mkvJson.probe.recommendedMode, 'direct');
     assert.ok(mkvJson.probe.subtitles.length >= 1);
+
+    // 3b) Video thumbnail extraction returns valid JPEG and torrent list includes primaryVideo
+    const thumbRes = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/stream/${hash}/0/thumb`,
+      headers: { cookie: cookieHeader },
+    });
+    assert.equal(thumbRes.statusCode, 200);
+    assert.equal(thumbRes.headers['content-type'], 'image/jpeg');
+    assert.equal(thumbRes.rawPayload[0], 0xff);
+    assert.equal(thumbRes.rawPayload[1], 0xd8);
+
+    const listRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/torrents',
+      headers: { cookie: cookieHeader },
+    });
+    assert.equal(listRes.statusCode, 200);
+    const listed = listRes.json().torrents[0];
+    assert.equal(listed.videoCount, 2);
+    assert.equal(listed.playableCount, 2);
+    assert.ok(listed.primaryVideo !== null);
 
     // 4) Lossless Remux stream produces valid MP4 ftyp header
     const remuxRes = await ctx.app.inject({

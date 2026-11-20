@@ -12,9 +12,15 @@ import {
   verifySessionToken,
   verifyStreamToken,
 } from '../auth.js';
-import { getMimeType, probeMedia, resolveSafePath } from '../services/media.js';
+import {
+  extractVideoThumbnail,
+  getMimeType,
+  probeMedia,
+  resolveSafePath,
+} from '../services/media.js';
 
 export const activeFfmpegProcesses = new Set<ChildProcess>();
+const inflightThumbs = new Map<string, Promise<boolean>>();
 
 export function killAllFfmpeg(): void {
   for (const proc of activeFfmpegProcesses) {
@@ -378,5 +384,48 @@ export async function registerStreamRoutes(
     }
 
     return reply.code(404).send({ error: 'SubtitleNotFound' });
+  });
+
+  app.get('/api/stream/:hash/:fileIndex/thumb', async (req, reply) => {
+    const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
+    const idx = Number(fileIndex);
+    if (!Number.isInteger(idx) || idx < 0) {
+      return reply.code(400).send({ error: 'Bad Request' });
+    }
+    if (!(await authorizeStream(req, reply, hash, idx))) return;
+
+    const cleanHash = hash.toLowerCase().replace(/[^a-f0-9]/g, '');
+    if (!cleanHash) return reply.code(400).send({ error: 'Bad Request' });
+
+    const thumbPath = path.join(config.dataDir, 'thumbs', `${cleanHash}_${idx}.jpg`);
+    const cached = await fsp.stat(thumbPath).catch(() => null);
+    if (cached && cached.size > 512) {
+      reply.header('Content-Type', 'image/jpeg');
+      reply.header('Cache-Control', 'public, max-age=86400');
+      return reply.send(fs.createReadStream(thumbPath));
+    }
+
+    const target = await resolveFile(hash, idx);
+    if (!target || target.size < 8 * 1024) {
+      return reply.code(404).send({ error: 'NotReady' });
+    }
+
+    const key = `${cleanHash}_${idx}`;
+    let job = inflightThumbs.get(key);
+    if (!job) {
+      job = extractVideoThumbnail(target.absPath, thumbPath).finally(() => {
+        inflightThumbs.delete(key);
+      });
+      inflightThumbs.set(key, job);
+    }
+
+    const ok = await job;
+    if (!ok) {
+      return reply.code(404).send({ error: 'ThumbUnavailable' });
+    }
+
+    reply.header('Content-Type', 'image/jpeg');
+    reply.header('Cache-Control', 'public, max-age=86400');
+    return reply.send(fs.createReadStream(thumbPath));
   });
 }
