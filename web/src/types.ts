@@ -191,3 +191,100 @@ export interface SpeedTestRecord {
   rating: string;
   note: string;
 }
+
+export interface TorznabIndexerRecord {
+  id: number;
+  name: string;
+  url: string;
+  apiKey: string;
+  enabled: boolean;
+  createdAt: number;
+}
+
+export interface HubConfigResponse {
+  prowlarrUrl: string;
+  prowlarrApiKey: string;
+  prowlarrConfigured: boolean;
+  torznabIndexers: TorznabIndexerRecord[];
+  storageLimitGb: number;
+}
+
+export interface ProwlarrTestResult {
+  ok: boolean;
+  indexerCount: number;
+  enabledIndexers: Array<{ id: number; name: string; protocol: string; enable: boolean }>;
+  error?: string;
+}
+
+export interface HubSearchResult {
+  id: string;
+  title: string;
+  indexer: string;
+  sourceType: 'prowlarr' | 'torznab';
+  sizeBytes: number;
+  seeders: number;
+  leechers: number;
+  publishDate: string;
+  publishTimestamp: number;
+  downloadUrl: string;
+  magnetUrl: string;
+  infoUrl: string;
+  infoHash: string;
+  categories: number[];
+  resolution: string;
+  tags: string[];
+  exceedsLimit: boolean;
+}
+
+export interface HubSearchResponse {
+  query: string;
+  category: 'all' | 'movies' | 'tv' | 'anime';
+  results: HubSearchResult[];
+  sourcesQueried: number;
+  errors: string[];
+  storageLimitBytes: number;
+}
+
+export interface RssSubscriptionRecord {
+  id: number;
+  name: string;
+  feedUrl: string;
+  includeRegex: string;
+  excludeRegex: string;
+  minSizeMb: number;
+  maxSizeMb: number;
+  intervalMin: number;
+  sequential: boolean;
+  bingeMode: boolean;
+  enabled: boolean;
+  lastCheckedAt: number | null;
+  lastError: string;
+  matchedCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RssPreviewItem {
+  guid: string;
+  title: string;
+  downloadUrl: string;
+  magnetUrl: string;
+  sizeBytes: number;
+  publishDate: string;
+  publishTimestamp: number;
+  matched: boolean;
+  reason: string;
+  alreadySeen: boolean;
+}
+
+export interface RssSeenItemRecord {
+  subscriptionId: number;
+  itemGuid: string;
+  title: string;
+  downloadUrl: string;
+  sizeBytes: number;
+  matched: boolean;
+  pushed: boolean;
+  reason: string;
+  seenAt: number;
+}

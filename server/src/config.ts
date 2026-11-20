@@ -9,6 +9,8 @@ export interface AppConfig {
   qbitUrl: string;
   qbitUsername: string;
   qbitPassword: string;
+  prowlarrUrl: string;
+  prowlarrApiKey: string;
   downloadDir: string;
   dataDir: string;
   webDistDir: string;
@@ -48,6 +50,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     qbitUrl: (env.QBIT_URL || 'http://127.0.0.1:8080').replace(/\/+$/, ''),
     qbitUsername: env.QBIT_USERNAME || '',
     qbitPassword: env.QBIT_PASSWORD || '',
+    prowlarrUrl: (env.PROWLARR_URL || 'http://prowlarr:9696').replace(/\/+$/, ''),
+    prowlarrApiKey: env.PROWLARR_API_KEY || '',
     downloadDir,
     dataDir,
     webDistDir,

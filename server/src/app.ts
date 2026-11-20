@@ -11,11 +11,14 @@ import { QBittorrentClient, type IQBittorrentClient } from './services/qbittorre
 import { CleanupService } from './services/cleanup.js';
 import { TmdbService } from './services/tmdb.js';
 import { NotifierService } from './services/notifier.js';
+import { HubService } from './services/hub.js';
+import { RssService } from './services/rss.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerTorrentRoutes } from './routes/torrents.js';
 import { killAllFfmpeg, registerStreamRoutes } from './routes/stream.js';
 import { registerSpeedTestRoutes } from './routes/speedtest.js';
 import { registerSettingsRoutes } from './routes/settings.js';
+import { registerHubRoutes } from './routes/hub.js';
 
 export interface AppContext {
   app: FastifyInstance;
@@ -24,6 +27,8 @@ export interface AppContext {
   cleanup: CleanupService;
   tmdb: TmdbService;
   notifier: NotifierService;
+  hub: HubService;
+  rss: RssService;
   close: () => Promise<void>;
 }
 
@@ -39,12 +44,17 @@ export async function buildApp(
   fs.mkdirSync(config.downloadDir, { recursive: true });
 
   const dbPath = path.join(config.dataDir, 'cloudvideo.sqlite');
-  const db = new AppDatabase(dbPath, config.defaults);
+  const db = new AppDatabase(dbPath, config.defaults, {
+    prowlarrUrl: config.prowlarrUrl,
+    prowlarrApiKey: config.prowlarrApiKey,
+  });
   const qbit =
     overrides.qbit ?? new QBittorrentClient(config.qbitUrl, config.qbitUsername, config.qbitPassword);
   const notifier = new NotifierService(db);
   const tmdb = new TmdbService(db);
   const cleanup = new CleanupService(config, db, qbit, notifier);
+  const hub = new HubService(db, qbit, cleanup);
+  const rss = new RssService(db, hub, notifier);
   const requireAuth = createAuthHook(config.jwtSecret);
 
   const app = Fastify({
@@ -70,6 +80,7 @@ export async function buildApp(
   await registerStreamRoutes(app, { config, db, qbit, requireAuth });
   await registerSpeedTestRoutes(app, { db, requireAuth });
   await registerSettingsRoutes(app, { db, qbit, cleanup, notifier, requireAuth });
+  await registerHubRoutes(app, { db, hub, rss, requireAuth });
 
   if (fs.existsSync(config.webDistDir)) {
     await app.register(fastifyStatic, {
@@ -88,14 +99,16 @@ export async function buildApp(
 
   if (overrides.startScheduler !== false) {
     cleanup.startScheduler(30_000);
+    rss.startScheduler(60_000);
   }
 
   const close = async () => {
     cleanup.stopScheduler();
+    rss.stopScheduler();
     killAllFfmpeg();
     await app.close();
     db.close();
   };
 
-  return { app, db, qbit, cleanup, tmdb, notifier, close };
+  return { app, db, qbit, cleanup, tmdb, notifier, hub, rss, close };
 }

@@ -21,6 +21,48 @@ export interface AppSettings {
   telegramBotToken: string;
   telegramChatId: string;
   webhookUrl: string;
+  prowlarrUrl: string;
+  prowlarrApiKey: string;
+}
+
+export interface TorznabIndexerRecord {
+  id: number;
+  name: string;
+  url: string;
+  apiKey: string;
+  enabled: boolean;
+  createdAt: number;
+}
+
+export interface RssSubscriptionRecord {
+  id: number;
+  name: string;
+  feedUrl: string;
+  includeRegex: string;
+  excludeRegex: string;
+  minSizeMb: number;
+  maxSizeMb: number;
+  intervalMin: number;
+  sequential: boolean;
+  bingeMode: boolean;
+  enabled: boolean;
+  lastCheckedAt: number | null;
+  lastError: string;
+  matchedCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RssSeenItemRecord {
+  subscriptionId: number;
+  itemGuid: string;
+  title: string;
+  downloadUrl: string;
+  sizeBytes: number;
+  matched: boolean;
+  pushed: boolean;
+  reason: string;
+  seenAt: number;
 }
 
 export interface MediaItemRecord {
@@ -97,7 +139,11 @@ export class AppDatabase {
   private db: DatabaseSync;
   private defaults: AppSettings;
 
-  constructor(dbPath: string, defaults: AppConfig['defaults']) {
+  constructor(
+    dbPath: string,
+    defaults: AppConfig['defaults'],
+    hubDefaults: { prowlarrUrl?: string; prowlarrApiKey?: string } = {}
+  ) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.defaults = {
@@ -113,6 +159,8 @@ export class AppDatabase {
       telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
       telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
       webhookUrl: process.env.WEBHOOK_URL || '',
+      prowlarrUrl: (hubDefaults.prowlarrUrl ?? process.env.PROWLARR_URL ?? 'http://prowlarr:9696').replace(/\/+$/, ''),
+      prowlarrApiKey: hubDefaults.prowlarrApiKey ?? process.env.PROWLARR_API_KEY ?? '',
     };
     this.init();
   }
@@ -197,6 +245,48 @@ export class AppDatabase {
         rating TEXT NOT NULL,
         note TEXT NOT NULL DEFAULT ''
       );
+
+      CREATE TABLE IF NOT EXISTS torznab_indexers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        api_key TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rss_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        feed_url TEXT NOT NULL,
+        include_regex TEXT NOT NULL DEFAULT '',
+        exclude_regex TEXT NOT NULL DEFAULT '',
+        min_size_mb INTEGER NOT NULL DEFAULT 0,
+        max_size_mb INTEGER NOT NULL DEFAULT 0,
+        interval_min INTEGER NOT NULL DEFAULT 30,
+        sequential INTEGER NOT NULL DEFAULT 1,
+        binge_mode INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_checked_at INTEGER,
+        last_error TEXT NOT NULL DEFAULT '',
+        matched_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rss_seen_items (
+        subscription_id INTEGER NOT NULL,
+        item_guid TEXT NOT NULL,
+        title TEXT NOT NULL,
+        download_url TEXT NOT NULL DEFAULT '',
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        matched INTEGER NOT NULL DEFAULT 0,
+        pushed INTEGER NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL DEFAULT '',
+        seen_at INTEGER NOT NULL,
+        PRIMARY KEY (subscription_id, item_guid),
+        FOREIGN KEY (subscription_id) REFERENCES rss_subscriptions(id) ON DELETE CASCADE
+      );
     `);
   }
 
@@ -249,6 +339,8 @@ export class AppDatabase {
       telegramBotToken: str('telegramBotToken', this.defaults.telegramBotToken),
       telegramChatId: str('telegramChatId', this.defaults.telegramChatId),
       webhookUrl: str('webhookUrl', this.defaults.webhookUrl),
+      prowlarrUrl: str('prowlarrUrl', this.defaults.prowlarrUrl),
+      prowlarrApiKey: str('prowlarrApiKey', this.defaults.prowlarrApiKey),
     };
   }
 
@@ -274,6 +366,8 @@ export class AppDatabase {
       'telegramBotToken',
       'telegramChatId',
       'webhookUrl',
+      'prowlarrUrl',
+      'prowlarrApiKey',
     ];
     for (const k of keys) {
       if (partial[k] !== undefined) {
@@ -718,5 +812,291 @@ export class AppDatabase {
 
   deleteSpeedTest(id: number): void {
     this.db.prepare('DELETE FROM speed_tests WHERE id = ?').run(id);
+  }
+
+  // ---- Torznab Indexers ----
+  private mapTorznabRow(r: Record<string, unknown>): TorznabIndexerRecord {
+    return {
+      id: Number(r.id),
+      name: String(r.name),
+      url: String(r.url),
+      apiKey: String(r.api_key || ''),
+      enabled: Boolean(r.enabled),
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  listTorznabIndexers(): TorznabIndexerRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM torznab_indexers ORDER BY id ASC')
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapTorznabRow(r));
+  }
+
+  getTorznabIndexer(id: number): TorznabIndexerRecord | null {
+    const r = this.db.prepare('SELECT * FROM torznab_indexers WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this.mapTorznabRow(r) : null;
+  }
+
+  createTorznabIndexer(input: {
+    name: string;
+    url: string;
+    apiKey?: string;
+    enabled?: boolean;
+  }): TorznabIndexerRecord {
+    const createdAt = Date.now();
+    const enabled = input.enabled !== false;
+    const res = this.db
+      .prepare(
+        `INSERT INTO torznab_indexers (name, url, api_key, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(input.name.trim(), input.url.trim(), (input.apiKey || '').trim(), enabled ? 1 : 0, createdAt);
+    return {
+      id: Number(res.lastInsertRowid),
+      name: input.name.trim(),
+      url: input.url.trim(),
+      apiKey: (input.apiKey || '').trim(),
+      enabled,
+      createdAt,
+    };
+  }
+
+  updateTorznabIndexer(
+    id: number,
+    patch: Partial<{ name: string; url: string; apiKey: string; enabled: boolean }>
+  ): TorznabIndexerRecord | null {
+    const existing = this.getTorznabIndexer(id);
+    if (!existing) return null;
+    const next: TorznabIndexerRecord = {
+      ...existing,
+      name: patch.name !== undefined ? patch.name.trim() : existing.name,
+      url: patch.url !== undefined ? patch.url.trim() : existing.url,
+      apiKey: patch.apiKey !== undefined ? patch.apiKey.trim() : existing.apiKey,
+      enabled: patch.enabled !== undefined ? patch.enabled : existing.enabled,
+    };
+    this.db
+      .prepare('UPDATE torznab_indexers SET name = ?, url = ?, api_key = ?, enabled = ? WHERE id = ?')
+      .run(next.name, next.url, next.apiKey, next.enabled ? 1 : 0, id);
+    return next;
+  }
+
+  deleteTorznabIndexer(id: number): void {
+    this.db.prepare('DELETE FROM torznab_indexers WHERE id = ?').run(id);
+  }
+
+  // ---- RSS Auto-Subscriptions ----
+  private mapRssSubRow(r: Record<string, unknown>): RssSubscriptionRecord {
+    return {
+      id: Number(r.id),
+      name: String(r.name),
+      feedUrl: String(r.feed_url),
+      includeRegex: String(r.include_regex || ''),
+      excludeRegex: String(r.exclude_regex || ''),
+      minSizeMb: Number(r.min_size_mb || 0),
+      maxSizeMb: Number(r.max_size_mb || 0),
+      intervalMin: Number(r.interval_min || 30),
+      sequential: Boolean(r.sequential),
+      bingeMode: Boolean(r.binge_mode),
+      enabled: Boolean(r.enabled),
+      lastCheckedAt: r.last_checked_at === null ? null : Number(r.last_checked_at),
+      lastError: String(r.last_error || ''),
+      matchedCount: Number(r.matched_count || 0),
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
+  }
+
+  listRssSubscriptions(): RssSubscriptionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM rss_subscriptions ORDER BY created_at DESC')
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapRssSubRow(r));
+  }
+
+  getRssSubscription(id: number): RssSubscriptionRecord | null {
+    const r = this.db.prepare('SELECT * FROM rss_subscriptions WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this.mapRssSubRow(r) : null;
+  }
+
+  createRssSubscription(input: {
+    name: string;
+    feedUrl: string;
+    includeRegex?: string;
+    excludeRegex?: string;
+    minSizeMb?: number;
+    maxSizeMb?: number;
+    intervalMin?: number;
+    sequential?: boolean;
+    bingeMode?: boolean;
+    enabled?: boolean;
+  }): RssSubscriptionRecord {
+    const now = Date.now();
+    const intervalMin = Math.min(1440, Math.max(5, Math.round(input.intervalMin ?? 30)));
+    const minSizeMb = Math.max(0, Math.round(input.minSizeMb ?? 0));
+    const maxSizeMb = Math.max(0, Math.round(input.maxSizeMb ?? 0));
+    const sequential = input.sequential !== false;
+    const bingeMode = Boolean(input.bingeMode);
+    const enabled = input.enabled !== false;
+
+    const res = this.db
+      .prepare(
+        `INSERT INTO rss_subscriptions (
+          name, feed_url, include_regex, exclude_regex, min_size_mb, max_size_mb,
+          interval_min, sequential, binge_mode, enabled, last_checked_at, last_error,
+          matched_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', 0, ?, ?)`
+      )
+      .run(
+        input.name.trim(),
+        input.feedUrl.trim(),
+        (input.includeRegex || '').trim(),
+        (input.excludeRegex || '').trim(),
+        minSizeMb,
+        maxSizeMb,
+        intervalMin,
+        sequential ? 1 : 0,
+        bingeMode ? 1 : 0,
+        enabled ? 1 : 0,
+        now,
+        now
+      );
+
+    return this.getRssSubscription(Number(res.lastInsertRowid))!;
+  }
+
+  updateRssSubscription(
+    id: number,
+    patch: Partial<{
+      name: string;
+      feedUrl: string;
+      includeRegex: string;
+      excludeRegex: string;
+      minSizeMb: number;
+      maxSizeMb: number;
+      intervalMin: number;
+      sequential: boolean;
+      bingeMode: boolean;
+      enabled: boolean;
+    }>
+  ): RssSubscriptionRecord | null {
+    const existing = this.getRssSubscription(id);
+    if (!existing) return null;
+    const now = Date.now();
+    const next = {
+      name: patch.name !== undefined ? patch.name.trim() : existing.name,
+      feedUrl: patch.feedUrl !== undefined ? patch.feedUrl.trim() : existing.feedUrl,
+      includeRegex: patch.includeRegex !== undefined ? patch.includeRegex.trim() : existing.includeRegex,
+      excludeRegex: patch.excludeRegex !== undefined ? patch.excludeRegex.trim() : existing.excludeRegex,
+      minSizeMb: patch.minSizeMb !== undefined ? Math.max(0, Math.round(patch.minSizeMb)) : existing.minSizeMb,
+      maxSizeMb: patch.maxSizeMb !== undefined ? Math.max(0, Math.round(patch.maxSizeMb)) : existing.maxSizeMb,
+      intervalMin:
+        patch.intervalMin !== undefined
+          ? Math.min(1440, Math.max(5, Math.round(patch.intervalMin)))
+          : existing.intervalMin,
+      sequential: patch.sequential !== undefined ? patch.sequential : existing.sequential,
+      bingeMode: patch.bingeMode !== undefined ? patch.bingeMode : existing.bingeMode,
+      enabled: patch.enabled !== undefined ? patch.enabled : existing.enabled,
+    };
+    this.db
+      .prepare(
+        `UPDATE rss_subscriptions SET
+          name = ?, feed_url = ?, include_regex = ?, exclude_regex = ?,
+          min_size_mb = ?, max_size_mb = ?, interval_min = ?,
+          sequential = ?, binge_mode = ?, enabled = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        next.name,
+        next.feedUrl,
+        next.includeRegex,
+        next.excludeRegex,
+        next.minSizeMb,
+        next.maxSizeMb,
+        next.intervalMin,
+        next.sequential ? 1 : 0,
+        next.bingeMode ? 1 : 0,
+        next.enabled ? 1 : 0,
+        now,
+        id
+      );
+    return this.getRssSubscription(id);
+  }
+
+  recordRssCheckResult(id: number, checkedAt: number, errorMsg: string, addedMatches: number): void {
+    this.db
+      .prepare(
+        `UPDATE rss_subscriptions
+         SET last_checked_at = ?, last_error = ?, matched_count = matched_count + ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(checkedAt, errorMsg, addedMatches, checkedAt, id);
+  }
+
+  deleteRssSubscription(id: number): void {
+    this.db.prepare('DELETE FROM rss_seen_items WHERE subscription_id = ?').run(id);
+    this.db.prepare('DELETE FROM rss_subscriptions WHERE id = ?').run(id);
+  }
+
+  hasRssSeenItem(subscriptionId: number, itemGuid: string): boolean {
+    const r = this.db
+      .prepare('SELECT 1 FROM rss_seen_items WHERE subscription_id = ? AND item_guid = ?')
+      .get(subscriptionId, itemGuid);
+    return Boolean(r);
+  }
+
+  addRssSeenItem(entry: {
+    subscriptionId: number;
+    itemGuid: string;
+    title: string;
+    downloadUrl: string;
+    sizeBytes: number;
+    matched: boolean;
+    pushed: boolean;
+    reason: string;
+    seenAt?: number;
+  }): void {
+    const seenAt = entry.seenAt ?? Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO rss_seen_items (
+          subscription_id, item_guid, title, download_url, size_bytes, matched, pushed, reason, seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(subscription_id, item_guid) DO NOTHING`
+      )
+      .run(
+        entry.subscriptionId,
+        entry.itemGuid,
+        entry.title,
+        entry.downloadUrl,
+        entry.sizeBytes,
+        entry.matched ? 1 : 0,
+        entry.pushed ? 1 : 0,
+        entry.reason,
+        seenAt
+      );
+  }
+
+  listRssSeenItems(subscriptionId: number, limit = 60): RssSeenItemRecord[] {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM rss_seen_items WHERE subscription_id = ? ORDER BY seen_at DESC LIMIT ?'
+      )
+      .all(subscriptionId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      subscriptionId: Number(r.subscription_id),
+      itemGuid: String(r.item_guid),
+      title: String(r.title),
+      downloadUrl: String(r.download_url || ''),
+      sizeBytes: Number(r.size_bytes || 0),
+      matched: Boolean(r.matched),
+      pushed: Boolean(r.pushed),
+      reason: String(r.reason || ''),
+      seenAt: Number(r.seen_at),
+    }));
   }
 }

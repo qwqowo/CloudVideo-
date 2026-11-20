@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -26,6 +27,8 @@ class MockQBitClient implements IQBittorrentClient {
   deletedHashes: string[] = [];
   pausedHashes: string[] = [];
   resumedHashes: string[] = [];
+  addedMagnets: Array<{ magnet: string; opts?: AddTorrentOptions }> = [];
+  addedFiles: Array<{ filename: string; size: number; opts?: AddTorrentOptions }> = [];
   addedTrackers: Array<{ hash: string; trackers: string[] }> = [];
   appliedPrefs: QBitFullPreferences[] = [];
 
@@ -59,8 +62,12 @@ class MockQBitClient implements IQBittorrentClient {
     };
   }
 
-  async addMagnet(_magnet: string, _opts?: AddTorrentOptions): Promise<void> {}
-  async addTorrentFile(_buffer: Buffer, _filename: string, _opts?: AddTorrentOptions): Promise<void> {}
+  async addMagnet(magnet: string, opts?: AddTorrentOptions): Promise<void> {
+    this.addedMagnets.push({ magnet, opts });
+  }
+  async addTorrentFile(buffer: Buffer, filename: string, opts?: AddTorrentOptions): Promise<void> {
+    this.addedFiles.push({ filename, size: buffer.length, opts });
+  }
 
   async setFilePriority(hash: string, fileIndices: number[], priority: 0 | 1 | 6 | 7): Promise<void> {
     const list = this.files.get(hash.toLowerCase());
@@ -125,6 +132,8 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
       qbitUrl: 'http://127.0.0.1:8080',
       qbitUsername: '',
       qbitPassword: '',
+      prowlarrUrl: '',
+      prowlarrApiKey: '',
       downloadDir,
       dataDir,
       webDistDir: path.join(tmpDir, 'nonexistent-web-dist'),
@@ -551,5 +560,291 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
     assert.equal(body.settings.proxyType, 'socks5');
     assert.equal(body.qbitSynced, true);
     assert.equal(qbit.appliedPrefs.at(-1)?.proxyPort, 10808);
+  });
+
+  it('aggregates Prowlarr + Torznab search, handles 302 magnet redirects & .torrent downloads, and runs RSS auto-subscriptions', async () => {
+    const hashA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const hashB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const hashRss = 'cccccccccccccccccccccccccccccccccccccccc';
+
+    const mockServer = http.createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+
+      if (url.pathname === '/api/v1/indexer') {
+        if (req.headers['x-api-key'] !== 'secret-prowlarr-key') {
+          res.writeHead(401);
+          res.end('Unauthorized');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify([
+            { id: 1, name: 'Nyaa', protocol: 'torrent', enable: true },
+            { id: 2, name: '1337x', protocol: 'torrent', enable: true },
+            { id: 3, name: 'DisabledSite', protocol: 'torrent', enable: false },
+          ])
+        );
+        return;
+      }
+
+      if (url.pathname === '/api/v1/search') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify([
+            {
+              guid: 'prowlarr-1',
+              title: 'Dune.Part.Two.2024.2160p.WEB-DL.HDR.HEVC.CHS',
+              indexer: '1337x',
+              size: 60 * 1024 * 1024 * 1024, // 60 GB -> exceeds 42 GB limit!
+              seeders: 120,
+              leechers: 15,
+              publishDate: '2026-11-19T12:00:00Z',
+              downloadUrl: `http://127.0.0.1:${(mockServer.address() as any).port}/download/redirect-magnet`,
+              infoHash: hashA,
+              categories: [{ id: 2000 }],
+            },
+            {
+              guid: 'prowlarr-2',
+              title: 'Dune.Part.Two.2024.1080p.WEB-DL.H264',
+              indexer: 'Nyaa',
+              size: 5 * 1024 * 1024 * 1024,
+              seeders: 45,
+              leechers: 5,
+              publishDate: '2026-11-20T12:00:00Z',
+              downloadUrl: `http://127.0.0.1:${(mockServer.address() as any).port}/download/file.torrent`,
+              infoHash: hashB,
+              categories: [{ id: 2000 }],
+            },
+          ])
+        );
+        return;
+      }
+
+      if (url.pathname === '/torznab') {
+        res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
+        res.end(`<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+            <channel>
+              <item>
+                <title>Dune.Part.Two.2024.1080p.WEB-DL.H264</title>
+                <guid>tz-dup-higher-seeds</guid>
+                <pubDate>Thu, 20 Nov 2026 12:00:00 GMT</pubDate>
+                <enclosure url="http://127.0.0.1:${(mockServer.address() as any).port}/download/file.torrent" length="5368709120" type="application/x-bittorrent" />
+                <torznab:attr name="seeders" value="88" />
+                <torznab:attr name="peers" value="100" />
+                <torznab:attr name="infohash" value="${hashB}" />
+              </item>
+            </channel>
+          </rss>`);
+        return;
+      }
+
+      if (url.pathname === '/download/redirect-magnet') {
+        res.writeHead(302, {
+          Location: `magnet:?xt=urn:btih:${hashA}&dn=Dune`,
+        });
+        res.end();
+        return;
+      }
+
+      if (url.pathname === '/download/file.torrent') {
+        res.writeHead(200, {
+          'Content-Type': 'application/x-bittorrent',
+          'Content-Disposition': 'attachment; filename="dune1080p.torrent"',
+        });
+        res.end(Buffer.from('d8:announce20:http://tracker.local4:infod4:name4:testee'));
+        return;
+      }
+
+      if (url.pathname === '/rss/anime.xml') {
+        res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
+        res.end(`<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0">
+            <channel>
+              <title>Mock Anime RSS</title>
+              <item>
+                <title>[SubGroup] Frieren - 01 [1080p][CHS].mkv</title>
+                <guid>rss-ep-01</guid>
+                <pubDate>Fri, 20 Nov 2026 10:00:00 GMT</pubDate>
+                <enclosure url="magnet:?xt=urn:btih:${hashRss}&amp;dn=Frieren01" length="1200000000" type="application/x-bittorrent" />
+              </item>
+              <item>
+                <title>[SubGroup] Frieren - 01 [720p][CHS].mkv</title>
+                <guid>rss-ep-01-720</guid>
+                <enclosure url="magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd" length="600000000" type="application/x-bittorrent" />
+              </item>
+              <item>
+                <title>[SubGroup] Frieren - Complete Batch [1080p][CHS]</title>
+                <guid>rss-batch-huge</guid>
+                <enclosure url="magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" length="18000000000" type="application/x-bittorrent" />
+              </item>
+            </channel>
+          </rss>`);
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not found');
+    });
+
+    await new Promise<void>((resolve) => mockServer.listen(0, '127.0.0.1', resolve));
+    const port = (mockServer.address() as any).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      // 1) Configure & test Prowlarr
+      const saveP = await ctx.app.inject({
+        method: 'PUT',
+        url: '/api/hub/prowlarr',
+        headers: { cookie: cookieHeader },
+        payload: { prowlarrUrl: baseUrl, prowlarrApiKey: 'secret-prowlarr-key' },
+      });
+      assert.equal(saveP.statusCode, 200);
+
+      const testP = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/hub/prowlarr/test',
+        headers: { cookie: cookieHeader },
+        payload: {},
+      });
+      assert.equal(testP.statusCode, 200);
+      assert.equal(testP.json().ok, true);
+      assert.equal(testP.json().indexerCount, 2);
+
+      // 2) Add custom Torznab indexer
+      const addTz = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/hub/indexers',
+        headers: { cookie: cookieHeader },
+        payload: { name: 'MockJackett', url: `${baseUrl}/torznab`, apiKey: 'tz-key' },
+      });
+      assert.equal(addTz.statusCode, 200);
+
+      // 3) Aggregated search deduplicates hashB keeping higher seeders (88 > 45) & marks 60GB item exceedsLimit
+      const searchRes = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/hub/search?q=Dune&category=movies&sort=seeders',
+        headers: { cookie: cookieHeader },
+      });
+      assert.equal(searchRes.statusCode, 200);
+      const searchBody = searchRes.json();
+      assert.equal(searchBody.sourcesQueried, 2);
+      assert.equal(searchBody.results.length, 2);
+      assert.equal(searchBody.results[0].seeders, 120);
+      assert.equal(searchBody.results[0].resolution, '4K');
+      assert.equal(searchBody.results[0].exceedsLimit, true);
+      assert.ok(searchBody.results[0].tags.includes('中字'));
+      assert.equal(searchBody.results[1].seeders, 88);
+      assert.equal(searchBody.results[1].indexer, 'MockJackett');
+
+      // 4) Push 302-to-magnet URL with bingeMode -> catches magnet redirect & registers binge policy
+      const dlMagnet = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/hub/download',
+        headers: { cookie: cookieHeader },
+        payload: {
+          downloadUrl: `${baseUrl}/download/redirect-magnet`,
+          title: 'Dune 4K',
+          sequential: true,
+          bingeMode: true,
+        },
+      });
+      assert.equal(dlMagnet.statusCode, 200);
+      assert.equal(dlMagnet.json().method, 'magnet');
+      assert.ok(qbit.addedMagnets.some((m) => m.magnet.includes(hashA)));
+      assert.equal(ctx.db.getTorrentPolicy(hashA)?.bingeMode, true);
+
+      // 5) Push binary .torrent download URL
+      const dlFile = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/hub/download',
+        headers: { cookie: cookieHeader },
+        payload: {
+          downloadUrl: `${baseUrl}/download/file.torrent`,
+          title: 'Dune 1080p',
+          sequential: true,
+          bingeMode: false,
+        },
+      });
+      assert.equal(dlFile.statusCode, 200);
+      assert.equal(dlFile.json().method, 'torrent_file');
+      assert.ok(qbit.addedFiles.some((f) => f.filename.includes('Dune 1080p')));
+
+      // 6) RSS invalid regex rejected with 400
+      const badRegex = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/rss/subscriptions',
+        headers: { cookie: cookieHeader },
+        payload: {
+          name: 'Bad',
+          feedUrl: `${baseUrl}/rss/anime.xml`,
+          includeRegex: '([unclosed',
+        },
+      });
+      assert.equal(badRegex.statusCode, 400);
+
+      // 7) RSS Dry-run preview matches only 1080p single episode (excludes 720p & >5000MB batch)
+      const prevRes = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/rss/preview',
+        headers: { cookie: cookieHeader },
+        payload: {
+          feedUrl: `${baseUrl}/rss/anime.xml`,
+          includeRegex: '1080p',
+          excludeRegex: '720p',
+          maxSizeMb: 5000,
+        },
+      });
+      assert.equal(prevRes.statusCode, 200);
+      const prevJson = prevRes.json();
+      assert.equal(prevJson.total, 3);
+      assert.equal(prevJson.matchedCount, 1);
+
+      // 8) Create RSS subscription, run once -> pushes 1 item; run again -> deduplicated (0 new pushes)
+      const subRes = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/rss/subscriptions',
+        headers: { cookie: cookieHeader },
+        payload: {
+          name: 'Frieren 1080p',
+          feedUrl: `${baseUrl}/rss/anime.xml`,
+          includeRegex: '1080p',
+          excludeRegex: '720p',
+          maxSizeMb: 5000,
+          intervalMin: 15,
+          sequential: true,
+        },
+      });
+      assert.equal(subRes.statusCode, 200);
+      const subId = subRes.json().subscription.id;
+
+      const run1 = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/rss/subscriptions/${subId}/run`,
+        headers: { cookie: cookieHeader },
+      });
+      assert.equal(run1.statusCode, 200);
+      assert.equal(run1.json().summary.pushedCount, 1);
+      assert.ok(qbit.addedMagnets.some((m) => m.magnet.includes(hashRss)));
+
+      const run2 = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/rss/subscriptions/${subId}/run`,
+        headers: { cookie: cookieHeader },
+      });
+      assert.equal(run2.statusCode, 200);
+      assert.equal(run2.json().summary.pushedCount, 0);
+
+      const histRes = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/rss/subscriptions/${subId}/history`,
+        headers: { cookie: cookieHeader },
+      });
+      assert.equal(histRes.statusCode, 200);
+      assert.equal(histRes.json().items.length, 3);
+      assert.equal(histRes.json().items.filter((i: any) => i.pushed).length, 1);
+    } finally {
+      await new Promise<void>((resolve) => mockServer.close(() => resolve()));
+    }
   });
 });

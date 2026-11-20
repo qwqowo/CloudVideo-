@@ -1,18 +1,24 @@
-# CloudVideo — 小盘云端种子下载与在线影院
+# CloudVideo — 云端种子探索、自动订阅与在线影院
 
-专为 **50–60 GB 小容量 VPS** 设计的自托管云端视频站，基于 **Docker Compose（Node.js 22 + React + FFmpeg + qBittorrent）** 一键部署。
+专为小中容量 VPS（**50–120 GB 磁盘 / 2C+ 内存**）设计的自托管云端视频站，基于 **Docker Compose（Node.js 22 + React + FFmpeg + qBittorrent + Prowlarr）** 一键部署。
 
 ## 核心特性
 
+- **在线种子 Hub 聚合搜种（Prowlarr + Torznab）**：
+  - `docker-compose.yml` 内置 **Prowlarr** 聚合索引器（并支持挂载 Jackett / 任意 Torznab 源），在 CloudVideo 网页内即可按分类（电影/剧集/动漫）、清晰度（4K/1080P）、做种数一键搜种。
+  - 自动标注是否超出磁盘上限，支持一键以「边下边播」或「追剧托管」模式推送至 qBittorrent（自动兼容 `magnet:`、302 跳转磁力与 `.torrent` 文件下载）。
+- **内置 RSS / Atom 自动追更订阅引擎**：
+  - 支持蜜柑计划（Mikanani）、Nyaa RSS、Prowlarr/Jackett RSS 及 PT 站订阅源；支持包含/排除正则表达式、最小/最大体积保护、自动去重与定时轮询。
+  - 提供**「试跑规则预览」**（保存前实时预览命中与过滤原因）、手动补抓、推送历史审计及 Telegram / Webhook 新番自动推送通知。
 - **极简科幻影院 UI + 真实多帧封面 + 可选 TMDB 刮削**：黑曜石工业遥测风海报网格，FFmpeg 自动避黑屏抽取 16:9 封面（悬停卡片自动轮播 3 帧预览），支持填入可选 TMDB API Key/Token 自动刮削中文片名、高清剧照、评分与简介，支持批量管理与 PWA 手机端全屏安装。
-- **小盘追剧托管（Binge Auto-Pilot）+ 边下边播**：默认开启顺序下载 + 首尾分片优先；大合集开启「小盘追剧托管」后自动仅下载前 N 集（默认 2 集），看到 70% 自动预载下一集，看完按策略卸载，50–60 GB 硬盘丝滑追完 100 GB+ 整季剧集。
+- **小盘追剧托管（Binge Auto-Pilot）+ 边下边播**：默认开启顺序下载 + 首尾分片优先；大合集开启「小盘追剧托管」后自动仅下载前 N 集（默认 2 集），看到 70% 自动预载下一集，看完按策略卸载，小硬盘丝滑追完 100 GB+ 整季剧集。
 - **默认原生直出 + 影院播放器 + 桌面/移动外链**：
   - 默认零 CPU 原生 HTTP Range 206 直出，遇到浏览器不支持的 MKV / AC3 / DTS 可一键切至 **FFmpeg 无损 Remux**。
   - 支持**直接上传本地 `.srt/.ass/.vtt` 外挂字幕**与实时字幕时间轴偏移（`±0.5s`）、边下边播实时码率 vs 下载速度监控、全套键盘快捷键（`Space`/`←→`/`↑↓`/`[]`/`F`/`M`/`N`）与片尾一键「卸载本集并连播下一集」。
   - 一键拉起 **PotPlayer / IINA / MPV / Infuse / VLC / nPlayer** 或复制 12 小时签名直链（VidHub）。
 - **看完自动卸载 + 水位 LRU 保护 + 清理审计日志**：
-  - 达到进度阈值（默认 `90%`）后进入可调缓冲期（默认 `24h`，可调 `0h` 立即删除），超水位上限（默认 `45 GB`）自动按 LRU 淘汰未锁定文件至 85%；每次自动与手动清理均记入「清理审计日志」透明可查。
-- **BT 加速与离线通知**：支持在网页一键注入公共高速 Tracker、可视化配置 HTTP/SOCKS5 代理、以及下载完成自动发送 **Telegram Bot / Webhook** 推送。
+  - 达到进度阈值（默认 `90%`）后进入可调缓冲期（默认 `24h`，可调 `0h` 立即删除），超水位上限自动按 LRU 淘汰未锁定文件至 85%；每次自动与手动清理均记入「清理审计日志」透明可查。
+- **BT 加速与离线通知**：支持在网页一键注入公共高速 Tracker、可视化配置 HTTP/SOCKS5 代理、以及下载完成/RSS 命中自动发送 **Telegram Bot / Webhook** 推送。
 - **内置节点带宽测速仪 & 公网安全**：纯内存不可压缩随机流测速（Ping + 单线程 + 4 线程实时示波曲线与 1080p/4K 评级）；单密码登录（带 5 次输错防爆破锁定 15 分钟），qBittorrent WebUI 仅限 Docker 内网访问。
 
 ---
@@ -40,6 +46,13 @@ docker compose up -d --build
 ```
 
 启动完成后打开浏览器访问：`http://<你的服务器IP>:3000`。
+
+### 3. 启用在线种子 Hub 聚合搜种（Prowlarr，30 秒配置）
+
+1. 访问 `http://<你的服务器IP>:9696` 完成 Prowlarr 首次管理员密码设置。
+2. 在 Prowlarr 左侧进入 **Indexers → Add Indexer**，按需勾选公开影视/动漫站或填入你的 PT 站。
+3. 在 Prowlarr 左侧进入 **Settings → General → Security**，复制 **API Key**。
+4. 回到 CloudVideo 顶部菜单 **「探索订阅」→「索引源接入」**，粘贴 API Key 并点击「测试连接」与「保存配置」（Docker 内网默认地址 `http://prowlarr:9696` 无需修改）。
 
 > **提示**：首次启动时，`scripts/qbittorrent-init.sh` 会自动在 `./data/qbittorrent/config` 中配置内网白名单和禁用预分配，无需手动去查 qBittorrent 临时密码。
 

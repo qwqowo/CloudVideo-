@@ -21,6 +21,23 @@ services:
     networks:
       - cloudvideo-net
 
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: cloudvideo-prowlarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data/prowlarr/config:/config
+    ports:
+      # 首次部署请访问 http://<服务器IP>:9696 设置 Prowlarr 管理员密码并添加索引站，
+      # 之后可将 Settings -> General 中的 API Key 填入 CloudVideo「探索订阅 -> 索引源接入」。
+      - "${PROWLARR_PORT:-9696}:9696"
+    networks:
+      - cloudvideo-net
+
   cloud-video:
     build:
       context: .
@@ -29,6 +46,7 @@ services:
     restart: unless-stopped
     depends_on:
       - qbittorrent
+      - prowlarr
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -36,6 +54,8 @@ services:
       - APP_PASSWORD=${APP_PASSWORD:-change-me-strong-password}
       - JWT_SECRET=${JWT_SECRET:-change-me-random-secret-key-at-least-32-chars}
       - QBIT_URL=http://qbittorrent:8080
+      - PROWLARR_URL=${PROWLARR_URL:-http://prowlarr:9696}
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY:-}
       - DOWNLOAD_DIR=/downloads
       - DATA_DIR=/app/data
       - STORAGE_LIMIT_GB=${STORAGE_LIMIT_GB:-45}

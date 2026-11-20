@@ -8,11 +8,12 @@ import {
   ArrowDown,
   ArrowUp,
   Layers,
+  Radar,
 } from 'lucide-react';
 import type { StorageStats } from '../types';
 import { formatBytes, formatSpeed } from '../lib/api';
 
-export type NavTab = 'library' | 'speedtest' | 'settings';
+export type NavTab = 'library' | 'hub' | 'speedtest' | 'settings';
 
 interface LayoutProps {
   activeTab: NavTab;
@@ -65,6 +66,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <nav className="flex items-center gap-1">
               {[
                 { id: 'library' as const, label: '媒体库', code: 'ARCHIVE', icon: Layers },
+                { id: 'hub' as const, label: '探索订阅', code: 'HUB', icon: Radar },
                 { id: 'speedtest' as const, label: '节点测速', code: 'LINK', icon: Gauge },
                 { id: 'settings' as const, label: '存储策略', code: 'SYS', icon: Settings },
               ].map((item) => {

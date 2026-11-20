@@ -84,7 +84,7 @@ export class NotifierService {
   async send(payload: {
     title: string;
     message: string;
-    event: 'download_complete' | 'test';
+    event: 'download_complete' | 'rss_matched' | 'test';
     torrentName?: string;
     sizeBytes?: number;
   }): Promise<{ telegramSent: boolean; webhookSent: boolean; errors: string[] }> {

@@ -4,6 +4,7 @@ import type { TorrentsResponse } from './types';
 import { LoginPage } from './pages/LoginPage';
 import { Layout, type NavTab } from './components/Layout';
 import { LibraryPage } from './pages/LibraryPage';
+import { HubPage } from './pages/HubPage';
 import { PlayerPage } from './pages/PlayerPage';
 import { SpeedTestPage } from './pages/SpeedTestPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -124,6 +125,17 @@ export const App: React.FC = () => {
           onRefresh={() => void fetchTorrents()}
           onOpenAdd={() => setAddOpen(true)}
           onPlay={(hash, fileIndex, torrentName) => setPlayer({ hash, fileIndex, torrentName })}
+        />
+      ) : tab === 'hub' ? (
+        <HubPage
+          onDownloaded={(warning) => {
+            if (warning) setBanner(warning);
+            void fetchTorrents();
+          }}
+          onGoLibrary={() => {
+            setTab('library');
+            void fetchTorrents();
+          }}
         />
       ) : tab === 'speedtest' ? (
         <SpeedTestPage />
