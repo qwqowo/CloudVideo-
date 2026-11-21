@@ -19,11 +19,17 @@ import {
   Minimize2,
   SlidersHorizontal,
   RotateCcw,
+  RotateCw,
   X,
   Search,
   Download,
   Loader2,
   Sparkles,
+  Play,
+  Pause,
+  VolumeX,
+  Volume1,
+  PictureInPicture2,
 } from 'lucide-react';
 import type {
   DownloadLiveStatus,
@@ -146,7 +152,7 @@ function parseVttTimeSec(ts: string): number {
 
 function parseWebVttCues(vtt: string): ParsedVttCue[] {
   const normalized = vtt.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const blocks = normalized.split(/\n{2,}/);
+  const blocks = normalized.split(/\n[ \t]*\n+/);
   const cues: ParsedVttCue[] = [];
 
   for (const block of blocks) {
@@ -156,7 +162,7 @@ function parseWebVttCues(vtt: string): ParsedVttCue[] {
     const m = lines[timeIdx]
       .trim()
       .match(
-        /^(\d{1,2}:\d{2}:\d{2}[.,]\d{3}|\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3}|\d{2}:\d{2}[.,]\d{3})(.*)$/
+        /^(\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}|\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}|\d{1,2}:\d{2}[.,]\d{1,3})(.*)$/
       );
     if (!m) continue;
     const start = parseVttTimeSec(m[1]);
@@ -193,27 +199,71 @@ function isChinesePrimaryLine(line: string): boolean {
   return /[\u4e00-\u9fff]/.test(line) && !/[\u3040-\u30ff]/.test(line);
 }
 
-function shiftVttTimestamps(vtt: string, offsetSec: number): string {
-  if (!offsetSec) return vtt;
-  const parseTs = (ts: string) => {
-    const parts = ts.split(':');
-    const secPart = parts.pop() || '0';
-    const minPart = parts.pop() || '0';
-    const hrPart = parts.pop() || '0';
-    return Number(hrPart) * 3600 + Number(minPart) * 60 + Number(secPart);
-  };
-  const fmtTs = (sec: number) => {
-    const clamped = Math.max(0, sec);
-    const h = Math.floor(clamped / 3600);
-    const m = Math.floor((clamped % 3600) / 60);
-    const s = clamped % 60;
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(h)}:${pad(m)}:${s < 10 ? '0' : ''}${s.toFixed(3)}`;
-  };
-  return vtt.replace(
-    /(\d{1,2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})/g,
-    (_m, a, b) => `${fmtTs(parseTs(a) + offsetSec)} --> ${fmtTs(parseTs(b) + offsetSec)}`
-  );
+function fmtVttTimestamp(sec: number): string {
+  const clamped = Math.max(0, sec);
+  const h = Math.floor(clamped / 3600);
+  const m = Math.floor((clamped % 3600) / 60);
+  const s = clamped % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(h)}:${pad(m)}:${s < 10 ? '0' : ''}${s.toFixed(3)}`;
+}
+
+function escapeVttText(line: string): string {
+  return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Generates a dynamically styled WebVTT track for native browser fullscreen fallback
+ * (iOS Safari webkitEnterFullscreen / right-click native fullscreen) so vertical height,
+ * bilingual filtering/swapping, secondary scaling class, and timing offset all take effect.
+ */
+function buildStyledNativeVtt(
+  cues: ParsedVttCue[],
+  style: SubStylePrefs,
+  offsetSec: number
+): string {
+  const out: string[] = ['WEBVTT', ''];
+  const bottomLinePct = Math.max(45, Math.min(94, 98 - style.bottomPct));
+
+  for (const cue of cues) {
+    const start = Math.max(0, cue.start + offsetSec);
+    const end = Math.max(0, cue.end + offsetSec);
+    if (end <= start) continue;
+
+    const hasZh = cue.lines.some(isChinesePrimaryLine);
+    const hasForeign = cue.lines.some(isJapaneseOrLatinLine);
+    const isBilingual = hasZh && hasForeign;
+
+    let visibleLines =
+      isBilingual && style.zhOnly
+        ? cue.lines.filter((l) => !isJapaneseOrLatinLine(l))
+        : [...cue.lines];
+
+    if (isBilingual && !style.zhOnly && style.swapBilingual && visibleLines.length >= 2) {
+      const zhLines = visibleLines.filter((l) => !isJapaneseOrLatinLine(l));
+      const foreignLines = visibleLines.filter(isJapaneseOrLatinLine);
+      visibleLines = isJapaneseOrLatinLine(visibleLines[0])
+        ? [...zhLines, ...foreignLines]
+        : [...foreignLines, ...zhLines];
+    }
+
+    if (visibleLines.length === 0) continue;
+
+    const lineSetting = cue.alignTop
+      ? 'line:6% align:center'
+      : `line:${bottomLinePct}% align:center`;
+    out.push(`${fmtVttTimestamp(start)} --> ${fmtVttTimestamp(end)} ${lineSetting}`);
+    for (const line of visibleLines) {
+      const escaped = escapeVttText(line);
+      if (isBilingual && isJapaneseOrLatinLine(line)) {
+        out.push(`<c.sec>${escaped}</c>`);
+      } else {
+        out.push(escaped);
+      }
+    }
+    out.push('');
+  }
+  return out.join('\n');
 }
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
@@ -241,11 +291,24 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   const [selectedSubId, setSelectedSubId] = useState<string>('');
   const [subOffsetSec, setSubOffsetSec] = useState(0);
   const [subBlobUrl, setSubBlobUrl] = useState<string>('');
+  const [subTrackRev, setSubTrackRev] = useState(0);
   const [parsedCues, setParsedCues] = useState<ParsedVttCue[]>([]);
   const [subStyle, setSubStyle] = useState<SubStylePrefs>(loadSubStylePrefs);
   const [showSubStylePanel, setShowSubStylePanel] = useState(false);
   const [stageFullscreen, setStageFullscreen] = useState(false);
   const [nativeVideoFullscreen, setNativeVideoFullscreen] = useState(false);
+  // Velvet Cinema custom player controls state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [mediaDuration, setMediaDuration] = useState(0);
+  const [bufferedSec, setBufferedSec] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [hoverSeek, setHoverSeek] = useState<{ pct: number; timeSec: number } | null>(null);
+  const controlsTimerRef = useRef<number | null>(null);
+  const clickTimerRef = useRef<number | null>(null);
+  const scrubberRef = useRef<HTMLDivElement | null>(null);
   const [uploadingSub, setUploadingSub] = useState(false);
   // Online subtitle search & 1-click mount state
   const [showOnlineSubModal, setShowOnlineSubModal] = useState(false);
@@ -306,7 +369,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       if (!v) return;
       if (mode === 'direct') {
         const dur = Number.isFinite(v.duration) ? v.duration : Infinity;
-        v.currentTime = Math.min(dur, Math.max(0, v.currentTime + deltaSec));
+        const next = Math.min(dur, Math.max(0, v.currentTime + deltaSec));
+        v.currentTime = next;
+        setCurrentTime(next);
       } else {
         const nextSec = Math.max(0, Math.floor(remuxOffset + v.currentTime + deltaSec));
         setRemuxOffset(nextSec);
@@ -315,6 +380,79 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     },
     [mode, remuxOffset]
   );
+
+  const seekToSeconds = useCallback(
+    (targetSec: number) => {
+      const clamped = Math.max(0, targetSec);
+      const v = videoRef.current;
+      if (mode === 'direct' && v) {
+        const dur = Number.isFinite(v.duration) ? v.duration : Infinity;
+        const finalSec = Math.min(dur, clamped);
+        v.currentTime = finalSec;
+        setCurrentTime(finalSec);
+      } else {
+        const floorSec = Math.floor(clamped);
+        setRemuxOffset(floorSec);
+        setCurrentTime(floorSec);
+      }
+    },
+    [mode]
+  );
+
+  const showControlsTemporarily = useCallback(() => {
+    setControlsVisible(true);
+    if (controlsTimerRef.current) window.clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = window.setTimeout(() => {
+      setControlsVisible(false);
+    }, 2800);
+  }, []);
+
+  const togglePlayPause = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) void v.play();
+    else v.pause();
+    showControlsTemporarily();
+  }, [showControlsTemporarily]);
+
+  const toggleMute = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setIsMuted(v.muted);
+  }, []);
+
+  const handleVolumeSlider = useCallback((nextVol: number) => {
+    const v = videoRef.current;
+    const clamped = Math.min(1, Math.max(0, nextVol));
+    setVolume(clamped);
+    if (v) {
+      v.volume = clamped;
+      v.muted = clamped === 0;
+      setIsMuted(v.muted);
+    }
+  }, []);
+
+  const togglePiP = useCallback(async () => {
+    const v = videoRef.current;
+    if (!v || !document.pictureInPictureEnabled) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else {
+        await v.requestPictureInPicture();
+      }
+    } catch {
+      // ignore PiP errors
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (controlsTimerRef.current) window.clearTimeout(controlsTimerRef.current);
+      if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
+    };
+  }, []);
 
   const handleVideoTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (e.touches.length !== 1) return;
@@ -439,6 +577,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     } else {
       st.lastTapTime = now;
       st.lastTapZone = zone;
+      setControlsVisible((v) => !v);
+      if (controlsTimerRef.current) window.clearTimeout(controlsTimerRef.current);
+      controlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3200);
     }
   };
 
@@ -452,6 +593,11 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     setMode('direct');
     setRemuxOffset(0);
     setCurrentTime(0);
+    setMediaDuration(0);
+    setBufferedSec(0);
+    setIsPlaying(false);
+    setIsBuffering(false);
+    setControlsVisible(true);
     setSubOffsetSec(0);
     setOnlineSubData(null);
     setOnlineSubQuery('');
@@ -518,25 +664,40 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     });
   }, []);
 
-  // Track stage fullscreen vs native <video> fullscreen so subtitles never duplicate
+  // Track stage fullscreen vs native <video> fullscreen (including iOS Safari webkitbeginfullscreen)
   useEffect(() => {
     const syncFs = () => {
       const fsEl = document.fullscreenElement;
       setStageFullscreen(Boolean(fsEl && fsEl === stageRef.current));
       setNativeVideoFullscreen(Boolean(fsEl && fsEl === videoRef.current));
     };
-    document.addEventListener('fullscreenchange', syncFs);
-    return () => document.removeEventListener('fullscreenchange', syncFs);
-  }, []);
+    const v = videoRef.current;
+    const onWebkitBegin = () => setNativeVideoFullscreen(true);
+    const onWebkitEnd = () => setNativeVideoFullscreen(false);
 
-  // Keep native <track> hidden while Custom Cinema Overlay is active; show in native <video> fullscreen
+    document.addEventListener('fullscreenchange', syncFs);
+    v?.addEventListener('webkitbeginfullscreen', onWebkitBegin as EventListener);
+    v?.addEventListener('webkitendfullscreen', onWebkitEnd as EventListener);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFs);
+      v?.removeEventListener('webkitbeginfullscreen', onWebkitBegin as EventListener);
+      v?.removeEventListener('webkitendfullscreen', onWebkitEnd as EventListener);
+    };
+  }, [mode, audioTrack, remuxOffset, probeData]);
+
+  // Keep native <track> strictly hidden while Custom Cinema Overlay is active; show in native fullscreen
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !v.textTracks) return;
-    for (let i = 0; i < v.textTracks.length; i++) {
-      v.textTracks[i].mode = nativeVideoFullscreen ? 'showing' : 'hidden';
-    }
-  }, [nativeVideoFullscreen, subBlobUrl, mode, audioTrack, remuxOffset]);
+    const syncTracks = () => {
+      for (let i = 0; i < v.textTracks.length; i++) {
+        v.textTracks[i].mode = nativeVideoFullscreen ? 'showing' : 'hidden';
+      }
+    };
+    syncTracks();
+    v.textTracks.addEventListener('addtrack', syncTracks);
+    return () => v.textTracks.removeEventListener('addtrack', syncTracks);
+  }, [nativeVideoFullscreen, subBlobUrl, subTrackRev, mode, audioTrack, remuxOffset]);
 
   // Higher-precision subtitle clock (100ms) while video plays for crisp anime dialogue timing
   useEffect(() => {
@@ -550,14 +711,12 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     return () => window.clearInterval(id);
   }, [parsedCues.length, mode, remuxOffset]);
 
-  // Fetch & parse active subtitle into clean cues (+ keep shifted blob URL for native fullscreen fallback)
+  // 1) Fetch & parse active subtitle into clean cues once per track change
   useEffect(() => {
-    let revokedUrl = '';
     let cancelled = false;
-
     if (!activeSub) {
-      setSubBlobUrl('');
       setParsedCues([]);
+      setSubBlobUrl('');
       return;
     }
 
@@ -567,30 +726,65 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
         if (!res.ok || cancelled) return;
         const rawVtt = await res.text();
         if (cancelled) return;
-
         setParsedCues(parseWebVttCues(rawVtt));
-
-        if (subOffsetSec === 0) {
-          setSubBlobUrl(activeSub.url);
-        } else {
-          const shifted = shiftVttTimestamps(rawVtt, subOffsetSec);
-          const blob = new Blob([shifted], { type: 'text/vtt' });
-          revokedUrl = URL.createObjectURL(blob);
-          setSubBlobUrl(revokedUrl);
-        }
       } catch {
         if (!cancelled) {
-          setSubBlobUrl(activeSub.url);
           setParsedCues([]);
+          setSubBlobUrl(activeSub.url);
         }
       }
     })();
 
     return () => {
       cancelled = true;
+    };
+  }, [activeSub]);
+
+  // 2) Dynamically generate styled WebVTT Blob (line:%, zhOnly, swapBilingual, offset) for native fullscreen fallback
+  useEffect(() => {
+    if (!activeSub || parsedCues.length === 0) {
+      setSubBlobUrl('');
+      return;
+    }
+    let revokedUrl = '';
+    const timer = window.setTimeout(() => {
+      const styledVtt = buildStyledNativeVtt(parsedCues, subStyle, subOffsetSec);
+      const blob = new Blob([styledVtt], { type: 'text/vtt;charset=utf-8' });
+      revokedUrl = URL.createObjectURL(blob);
+      setSubBlobUrl(revokedUrl);
+      setSubTrackRev((r) => r + 1);
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timer);
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
-  }, [activeSub, subOffsetSec]);
+  }, [activeSub, parsedCues, subStyle, subOffsetSec]);
+
+  // Dynamic CSS for native <video>::cue fallback (respects color, font size, weight, bg opacity, stroke, secondary scale)
+  const nativeCueCss = useMemo(() => {
+    const basePx = Math.round(subStyle.fontSizePx * (nativeVideoFullscreen ? 1.45 : 1.15));
+    const secPx = Math.max(12, Math.round(basePx * (subStyle.secondaryScale / 100)));
+    const bg =
+      subStyle.bgOpacity > 0
+        ? `rgba(9, 9, 11, ${(subStyle.bgOpacity / 100).toFixed(2)})`
+        : 'transparent';
+    const shadow = buildSubtitleTextShadow(subStyle.strokeStrength);
+    return `
+video.cloudvideo-player::cue {
+  color: ${subStyle.color} !important;
+  font-size: ${basePx}px !important;
+  font-weight: ${subStyle.fontWeight} !important;
+  background-color: ${bg} !important;
+  background: ${bg} !important;
+  text-shadow: ${shadow} !important;
+  line-height: 1.42 !important;
+}
+video.cloudvideo-player::cue(.sec) {
+  font-size: ${secPx}px !important;
+  opacity: 0.86 !important;
+}`;
+  }, [subStyle, nativeVideoFullscreen]);
 
   const toggleStageFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
@@ -598,9 +792,34 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     } else if (stageRef.current?.requestFullscreen) {
       void stageRef.current.requestFullscreen();
     } else {
-      void videoRef.current?.requestFullscreen?.();
+      const v = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+      if (v?.webkitEnterFullscreen) {
+        v.webkitEnterFullscreen();
+      } else {
+        void v?.requestFullscreen?.();
+      }
     }
   }, []);
+
+  const handleVideoSurfaceClick = useCallback(() => {
+    if (clickTimerRef.current) {
+      window.clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+      return;
+    }
+    clickTimerRef.current = window.setTimeout(() => {
+      clickTimerRef.current = null;
+      togglePlayPause();
+    }, 200);
+  }, [togglePlayPause]);
+
+  const handleVideoSurfaceDoubleClick = useCallback(() => {
+    if (clickTimerRef.current) {
+      window.clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    toggleStageFullscreen();
+  }, [toggleStageFullscreen]);
 
   const activeSubtitleCues = useMemo(() => {
     if (!activeSub || parsedCues.length === 0 || nativeVideoFullscreen) return [];
@@ -817,6 +1036,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   );
 
   const openOnlineSubModal = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    }
     setShowOnlineSubModal(true);
     setOnlineSubError('');
     if (!onlineSubData) {
@@ -937,14 +1159,18 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       : `${probeData.urls.remux}&start=${remuxOffset}&audio=${audioTrack}`
     : '';
 
-  const totalDuration = probeData?.probe.durationSec || 0;
+  const totalDuration = Math.max(mediaDuration || 0, probeData?.probe.durationSec || 0);
   const parsed = probeData ? parseMediaTitle(probeData.fileName) : null;
   const dlMbps = liveDownload ? Number(((liveDownload.dlSpeed * 8) / 1_000_000).toFixed(1)) : 0;
   const isBufferingLive = liveDownload && liveDownload.fileProgress < 0.999;
   const dlFastEnough = probeData ? dlMbps >= probeData.probe.requiredMbps : true;
+  const showPlayerChrome = controlsVisible || !isPlaying || showSubStylePanel;
+  const playedPct = totalDuration > 0 ? Math.min(100, Math.max(0, (currentTime / totalDuration) * 100)) : 0;
+  const bufferedPct = totalDuration > 0 ? Math.min(100, Math.max(0, (bufferedSec / totalDuration) * 100)) : 0;
 
   return (
     <div className="space-y-5">
+      <style>{nativeCueCss}</style>
       {/* Quiet Top Bar */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <button onClick={onBack} className="btn-ghost px-4 py-2 text-xs">
@@ -981,7 +1207,13 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           )}
           {selectedSubId && (
             <button
-              onClick={() => setShowSubStylePanel((v) => !v)}
+              onClick={() => {
+                setShowSubStylePanel((v) => {
+                  const next = !v;
+                  if (next) showControlsTemporarily();
+                  return next;
+                });
+              }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border transition ${
                 showSubStylePanel
                   ? 'bg-white text-zinc-950 border-white font-medium'
@@ -1066,11 +1298,15 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           <div className={episodes.length > 1 ? 'xl:col-span-3 space-y-4' : 'xl:col-span-4 space-y-4'}>
             <div
               ref={stageRef}
-              className={`overflow-hidden bg-black relative ${
+              className={`overflow-hidden bg-black relative select-none ${
                 stageFullscreen
-                  ? 'w-screen h-screen flex flex-col justify-center'
+                  ? `w-screen h-screen flex flex-col justify-center ${showPlayerChrome ? '' : 'cursor-none'}`
                   : 'rounded-3xl border border-white/[0.08] shadow-[0_28px_70px_-20px_rgba(0,0,0,0.95)]'
               }`}
+              onMouseMove={showControlsTemporarily}
+              onMouseLeave={() => {
+                if (isPlaying && !showSubStylePanel) setControlsVisible(false);
+              }}
               onTouchStart={handleVideoTouchStart}
               onTouchMove={handleVideoTouchMove}
               onTouchEnd={handleVideoTouchEnd}
@@ -1090,33 +1326,97 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
               )}
 
+              {/* Center Buffering Spinner */}
+              {isBuffering && isPlaying && (
+                <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+                  <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 flex items-center justify-center">
+                    <Loader2 className="w-6 h-6 text-white animate-spin" />
+                  </div>
+                </div>
+              )}
+
+              {/* Center Play Badge when Paused */}
+              {!isPlaying && !isBuffering && !gestureHud && (
+                <button
+                  type="button"
+                  aria-label="播放"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    togglePlayPause();
+                  }}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-16 h-16 rounded-full bg-white/15 hover:bg-white/25 border border-white/25 backdrop-blur-md text-white flex items-center justify-center shadow-2xl transition active:scale-95"
+                >
+                  <Play className="w-7 h-7 fill-current ml-0.5" />
+                </button>
+              )}
+
               <video
                 key={`${mode}-${audioTrack}-${remuxOffset}`}
                 ref={videoRef}
                 src={streamSrc}
-                controls
                 autoPlay
                 playsInline
                 crossOrigin="anonymous"
-                onLoadedMetadata={handleVideoLoaded}
+                onClick={handleVideoSurfaceClick}
+                onDoubleClick={handleVideoSurfaceDoubleClick}
+                onLoadedMetadata={(e) => {
+                  handleVideoLoaded();
+                  const dur = e.currentTarget.duration;
+                  if (Number.isFinite(dur) && dur > 0) setMediaDuration(dur);
+                  setVolume(e.currentTarget.volume);
+                  setIsMuted(e.currentTarget.muted);
+                }}
+                onDurationChange={(e) => {
+                  const dur = e.currentTarget.duration;
+                  if (Number.isFinite(dur) && dur > 0) setMediaDuration(dur);
+                }}
+                onPlay={() => {
+                  setIsPlaying(true);
+                  setIsBuffering(false);
+                  showControlsTemporarily();
+                }}
+                onPlaying={() => {
+                  setIsPlaying(true);
+                  setIsBuffering(false);
+                }}
+                onWaiting={() => setIsBuffering(true)}
+                onCanPlay={() => setIsBuffering(false)}
+                onProgress={(e) => {
+                  const v = e.currentTarget;
+                  if (v.buffered.length > 0) {
+                    const end = v.buffered.end(v.buffered.length - 1);
+                    setBufferedSec(mode === 'remux' ? remuxOffset + end : end);
+                  }
+                }}
+                onVolumeChange={(e) => {
+                  setVolume(e.currentTarget.volume);
+                  setIsMuted(e.currentTarget.muted);
+                }}
                 onTimeUpdate={handleTimeUpdate}
-                onPause={() => void reportProgress(currentTime, true)}
+                onPause={() => {
+                  setIsPlaying(false);
+                  setControlsVisible(true);
+                  void reportProgress(currentTime, true);
+                }}
                 onEnded={() => {
+                  setIsPlaying(false);
+                  setControlsVisible(true);
                   void reportProgress(totalDuration || currentTime, true);
                   if (nextEpisode?.existsOnDisk) setShowNextPrompt(true);
                 }}
                 onError={() => {
+                  setIsBuffering(false);
                   if (mode === 'direct') setDirectPlaybackError(true);
                 }}
                 className={
                   stageFullscreen
-                    ? 'w-full h-full object-contain bg-black'
-                    : 'w-full aspect-video bg-black'
+                    ? 'cloudvideo-player w-full h-full object-contain bg-black'
+                    : 'cloudvideo-player w-full aspect-video bg-black'
                 }
               >
                 {activeSub && subBlobUrl && (
                   <track
-                    key={`${activeSub.id}-${subOffsetSec}`}
+                    key={`${activeSub.id}-${subTrackRev}`}
                     kind="subtitles"
                     src={subBlobUrl}
                     label={activeSub.title}
@@ -1211,73 +1511,181 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 );
               })()}
 
-              {/* Fullscreen Floating Quick Controls (Subtitle Adjust & Exit Fullscreen) */}
-              {stageFullscreen && (
-                <div className="absolute top-4 right-4 z-30 flex items-center gap-2 opacity-25 hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                  {selectedSubId && (
-                    <button
-                      type="button"
-                      onClick={() => setShowSubStylePanel((v) => !v)}
-                      className="px-3 py-1.5 rounded-full bg-black/70 border border-white/15 backdrop-blur-md text-xs text-white flex items-center gap-1.5"
-                    >
-                      <SlidersHorizontal className="w-3.5 h-3.5" />
-                      字幕调整
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={toggleStageFullscreen}
-                    className="px-3 py-1.5 rounded-full bg-black/70 border border-white/15 backdrop-blur-md text-xs text-white flex items-center gap-1.5"
-                  >
-                    <Minimize2 className="w-3.5 h-3.5" />
-                    退出全屏
-                  </button>
-                </div>
-              )}
-
-              {/* Floating Subtitle Studio Inside Fullscreen */}
-              {stageFullscreen && selectedSubId && showSubStylePanel && (
+              {/* Unified Live Floating Subtitle Studio (Works in BOTH Non-Fullscreen & Fullscreen!) */}
+              {selectedSubId && showSubStylePanel && (
                 <div
-                  className="absolute top-14 right-4 z-30 w-80 max-w-[92vw] cinema-glass rounded-2xl p-4 space-y-3 text-xs shadow-2xl"
+                  className="absolute top-3 right-3 z-40 w-[336px] max-w-[calc(100%-24px)] max-h-[calc(100%-86px)] overflow-y-auto cinema-glass rounded-2xl p-4 space-y-3 text-xs shadow-2xl border border-white/15"
+                  onClick={(e) => e.stopPropagation()}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                   onTouchMove={(e) => e.stopPropagation()}
                   onTouchEnd={(e) => e.stopPropagation()}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-white">字幕实时调整</span>
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.08]">
+                    <span className="font-semibold text-white flex items-center gap-1.5">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-300" />
+                      字幕实时调整
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          updateSubStyle(DEFAULT_SUB_STYLE);
+                          setSubOffsetSec(0);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-white transition"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        恢复默认
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowSubStylePanel(false)}
+                        className="p-1 rounded-full bg-white/[0.06] hover:bg-white/[0.15] text-zinc-300 hover:text-white transition"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Presets */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                       type="button"
-                      onClick={() => setShowSubStylePanel(false)}
-                      className="p-1 rounded-full text-zinc-400 hover:text-white"
+                      onClick={() =>
+                        updateSubStyle({
+                          color: '#FFFFFF',
+                          strokeStrength: 2,
+                          bgOpacity: 0,
+                          fontWeight: 600,
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-full bg-white/[0.08] hover:bg-white/[0.16] text-zinc-200 transition"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      影院描边
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateSubStyle({
+                          color: '#FFFFFF',
+                          strokeStrength: 0,
+                          bgOpacity: 55,
+                          fontWeight: 500,
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-full bg-white/[0.08] hover:bg-white/[0.16] text-zinc-200 transition"
+                    >
+                      柔雾胶囊
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateSubStyle({
+                          color: '#FDE68A',
+                          strokeStrength: 2,
+                          bgOpacity: 0,
+                          fontWeight: 600,
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-full bg-amber-400/15 hover:bg-amber-400/25 text-amber-200 transition"
+                    >
+                      经典暖黄
                     </button>
                   </div>
+
+                  {/* Mini Sample Preview (helpful when video is on a silent frame without cues) */}
+                  {activeSubtitleCues.length === 0 && (
+                    <div className="rounded-xl bg-black/55 border border-white/[0.06] py-2.5 px-3 flex justify-center overflow-hidden">
+                      <div
+                        className={`inline-flex flex-col items-center gap-0.5 text-center leading-snug ${
+                          subStyle.bgOpacity > 0 ? 'px-3 py-1 rounded-xl backdrop-blur-md' : ''
+                        }`}
+                        style={{
+                          backgroundColor:
+                            subStyle.bgOpacity > 0
+                              ? `rgba(9, 9, 11, ${(subStyle.bgOpacity / 100).toFixed(2)})`
+                              : 'transparent',
+                          textShadow: buildSubtitleTextShadow(subStyle.strokeStrength),
+                        }}
+                      >
+                        {(() => {
+                          const zh = (
+                            <div
+                              key="zh"
+                              style={{
+                                fontSize: `${Math.min(26, subStyle.fontSizePx)}px`,
+                                fontWeight: subStyle.fontWeight,
+                                color: subStyle.color,
+                              }}
+                            >
+                              实时字幕效果预览
+                            </div>
+                          );
+                          const foreign = !subStyle.zhOnly ? (
+                            <div
+                              key="en"
+                              style={{
+                                fontSize: `${Math.max(
+                                  10,
+                                  Math.round(
+                                    Math.min(26, subStyle.fontSizePx) *
+                                      (subStyle.secondaryScale / 100)
+                                  )
+                                )}px`,
+                                fontWeight: Math.max(400, subStyle.fontWeight - 100),
+                                color: subStyle.color,
+                                opacity: 0.86,
+                              }}
+                            >
+                              Live Subtitle Preview
+                            </div>
+                          ) : null;
+                          return subStyle.swapBilingual ? [zh, foreign] : [foreign, zh];
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Sliders */}
                   <div className="space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-400 shrink-0">字号 {subStyle.fontSizePx}px</span>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>字号大小</span>
+                        <span className="text-white">{subStyle.fontSizePx} px</span>
+                      </div>
                       <input
                         type="range"
                         min={14}
                         max={52}
                         value={subStyle.fontSizePx}
                         onChange={(e) => updateSubStyle({ fontSizePx: Number(e.target.value) })}
-                        className="w-40 accent-white"
+                        className="w-full accent-white cursor-pointer"
                       />
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-400 shrink-0">位置 {subStyle.bottomPct}%</span>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>距底高度</span>
+                        <span className="text-white">{subStyle.bottomPct}%</span>
+                      </div>
                       <input
                         type="range"
                         min={4}
                         max={42}
                         value={subStyle.bottomPct}
                         onChange={(e) => updateSubStyle({ bottomPct: Number(e.target.value) })}
-                        className="w-40 accent-white"
+                        className="w-full accent-white cursor-pointer"
                       />
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-400 shrink-0">底框 {subStyle.bgOpacity}%</span>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>背景黑底透明度</span>
+                        <span className="text-white">
+                          {subStyle.bgOpacity === 0 ? '无底框' : `${subStyle.bgOpacity}%`}
+                        </span>
+                      </div>
                       <input
                         type="range"
                         min={0}
@@ -1285,28 +1693,29 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                         step={5}
                         value={subStyle.bgOpacity}
                         onChange={(e) => updateSubStyle({ bgOpacity: Number(e.target.value) })}
-                        className="w-40 accent-white"
+                        className="w-full accent-white cursor-pointer"
                       />
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-400 shrink-0">描边</span>
-                      <div className="flex gap-1">
-                        {([0, 1, 2, 3] as const).map((lv) => (
-                          <button
-                            key={lv}
-                            type="button"
-                            onClick={() => updateSubStyle({ strokeStrength: lv })}
-                            className={`px-2 py-0.5 rounded-full ${
-                              subStyle.strokeStrength === lv
-                                ? 'bg-white text-zinc-950 font-medium'
-                                : 'bg-white/[0.08] text-zinc-300'
-                            }`}
-                          >
-                            {['无', '细', '中', '重'][lv]}
-                          </button>
-                        ))}
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>双语副行缩放</span>
+                        <span className="text-white">{subStyle.secondaryScale}%</span>
                       </div>
+                      <input
+                        type="range"
+                        min={60}
+                        max={100}
+                        step={5}
+                        value={subStyle.secondaryScale}
+                        onChange={(e) => updateSubStyle({ secondaryScale: Number(e.target.value) })}
+                        className="w-full accent-white cursor-pointer"
+                      />
                     </div>
+                  </div>
+
+                  {/* Color, Stroke, Weight */}
+                  <div className="space-y-2.5 pt-2 border-t border-white/[0.07]">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-zinc-400">颜色</span>
                       <div className="flex items-center gap-1.5">
@@ -1316,24 +1725,76 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                             type="button"
                             title={sw.label}
                             onClick={() => updateSubStyle({ color: sw.hex })}
-                            className={`w-5 h-5 rounded-full border ${
+                            className={`w-5 h-5 rounded-full border transition ${
                               subStyle.color.toLowerCase() === sw.hex.toLowerCase()
                                 ? 'border-white scale-110 ring-2 ring-white/40'
-                                : 'border-white/20'
+                                : 'border-white/20 hover:scale-105'
                             }`}
                             style={{ backgroundColor: sw.hex }}
                           />
                         ))}
+                        <label
+                          title="自定义颜色"
+                          className="w-5 h-5 rounded-full border border-white/25 overflow-hidden cursor-pointer flex items-center justify-center bg-gradient-to-tr from-rose-400 via-amber-300 to-sky-400"
+                        >
+                          <input
+                            type="color"
+                            value={subStyle.color}
+                            onChange={(e) => updateSubStyle({ color: e.target.value })}
+                            className="opacity-0 w-full h-full cursor-pointer"
+                          />
+                        </label>
                       </div>
                     </div>
-                    <div className="flex items-center justify-between gap-2 pt-1">
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400">描边</span>
+                      <div className="flex gap-1">
+                        {([0, 1, 2, 3] as const).map((lv) => (
+                          <button
+                            key={lv}
+                            type="button"
+                            onClick={() => updateSubStyle({ strokeStrength: lv })}
+                            className={`px-2 py-0.5 rounded-full transition ${
+                              subStyle.strokeStrength === lv
+                                ? 'bg-white text-zinc-950 font-medium'
+                                : 'bg-white/[0.08] text-zinc-300 hover:bg-white/[0.15]'
+                            }`}
+                          >
+                            {['无', '细', '标准', '重'][lv]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400">字重</span>
+                      <div className="flex gap-1">
+                        {([400, 500, 600, 700] as const).map((w) => (
+                          <button
+                            key={w}
+                            type="button"
+                            onClick={() => updateSubStyle({ fontWeight: w })}
+                            className={`px-2 py-0.5 rounded-full transition ${
+                              subStyle.fontWeight === w
+                                ? 'bg-white text-zinc-950 font-medium'
+                                : 'bg-white/[0.08] text-zinc-300 hover:bg-white/[0.15]'
+                            }`}
+                          >
+                            {{ 400: '细', 500: '常规', 600: '加粗', 700: '特粗' }[w]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-0.5">
                       <button
                         type="button"
                         onClick={() => updateSubStyle({ zhOnly: !subStyle.zhOnly })}
-                        className={`px-2.5 py-1 rounded-full border ${
+                        className={`flex-1 py-1 rounded-full border transition ${
                           subStyle.zhOnly
                             ? 'bg-amber-400/20 border-amber-400/40 text-amber-200'
-                            : 'bg-white/[0.06] border-white/10 text-zinc-300'
+                            : 'bg-white/[0.06] border-white/10 text-zinc-300 hover:text-white'
                         }`}
                       >
                         仅看中文：{subStyle.zhOnly ? '开' : '关'}
@@ -1341,14 +1802,46 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       <button
                         type="button"
                         onClick={() => updateSubStyle({ swapBilingual: !subStyle.swapBilingual })}
-                        className={`px-2.5 py-1 rounded-full border ${
+                        className={`flex-1 py-1 rounded-full border transition ${
                           subStyle.swapBilingual
                             ? 'bg-white/15 border-white/30 text-white'
-                            : 'bg-white/[0.06] border-white/10 text-zinc-300'
+                            : 'bg-white/[0.06] border-white/10 text-zinc-300 hover:text-white'
                         }`}
                       >
-                        上下互换
+                        上下互换：{subStyle.swapBilingual ? '开' : '关'}
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Fine Timing Sync */}
+                  <div className="space-y-1.5 pt-2 border-t border-white/[0.07]">
+                    <div className="flex items-center justify-between text-zinc-400 tabular-nums">
+                      <span>时间轴同步</span>
+                      <strong className="text-white">
+                        {subOffsetSec >= 0
+                          ? `+${subOffsetSec.toFixed(1)}s`
+                          : `${subOffsetSec.toFixed(1)}s`}
+                      </strong>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {[-1, -0.5, -0.1, 0, 0.1, 0.5, 1].map((delta) => (
+                        <button
+                          key={delta}
+                          type="button"
+                          onClick={() =>
+                            delta === 0
+                              ? setSubOffsetSec(0)
+                              : setSubOffsetSec((o) => Number((o + delta).toFixed(1)))
+                          }
+                          className={`py-1 rounded-lg text-[11px] tabular-nums transition ${
+                            delta === 0
+                              ? 'bg-white/[0.14] text-white hover:bg-white/[0.22]'
+                              : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.14]'
+                          }`}
+                        >
+                          {delta === 0 ? '0' : delta > 0 ? `+${delta}` : delta}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -1356,7 +1849,11 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
 
               {/* Floating Next-Episode Card */}
               {showNextPrompt && nextEpisode?.existsOnDisk && (
-                <div className="absolute bottom-14 right-4 z-20 cinema-glass rounded-2xl p-4 max-w-xs space-y-3 shadow-2xl">
+                <div
+                  className="absolute bottom-20 right-4 z-30 cinema-glass rounded-2xl p-4 max-w-xs space-y-3 shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
                   <div className="text-[11px] text-zinc-400">下一集已就绪</div>
                   <div className="text-xs font-medium text-white truncate">
                     {nextEpisode.name.split('/').pop()}
@@ -1380,29 +1877,200 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
               )}
 
-              {mode === 'remux' && totalDuration > 0 && (
-                <div className="bg-[#111115] border-t border-white/[0.08] px-5 py-3 flex items-center gap-3">
-                  <span className="text-xs text-zinc-400 shrink-0">进度跳转</span>
-                  <span className="text-xs text-zinc-200 tabular-nums shrink-0">
-                    {formatDuration(currentTime)}
-                  </span>
+              {/* Velvet Cinema Unified Player Control Bar (Always fullscreens Cinema Stage!) */}
+              <div
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+                className={`absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/90 via-black/55 to-transparent pt-10 pb-3 px-3.5 sm:px-5 transition-opacity duration-200 ${
+                  showPlayerChrome ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                }`}
+              >
+                {/* Scrubber Bar (works for both Direct Play and Remux!) */}
+                <div
+                  ref={scrubberRef}
+                  className="relative h-5 flex items-center cursor-pointer group/scrub mb-1.5"
+                  onMouseMove={(e) => {
+                    if (totalDuration <= 0 || !scrubberRef.current) return;
+                    const rect = scrubberRef.current.getBoundingClientRect();
+                    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+                    setHoverSeek({ pct: pct * 100, timeSec: pct * totalDuration });
+                  }}
+                  onMouseLeave={() => setHoverSeek(null)}
+                >
+                  {hoverSeek && (
+                    <div
+                      className="pointer-events-none absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded-md bg-black/85 border border-white/15 text-[11px] text-white tabular-nums whitespace-nowrap"
+                      style={{ left: `${Math.min(96, Math.max(4, hoverSeek.pct))}%` }}
+                    >
+                      {formatDuration(hoverSeek.timeSec)}
+                    </div>
+                  )}
+                  <div className="w-full h-1 group-hover/scrub:h-1.5 rounded-full bg-white/20 overflow-hidden transition-all relative">
+                    <div
+                      className="absolute inset-y-0 left-0 bg-white/30 rounded-full"
+                      style={{ width: `${bufferedPct}%` }}
+                    />
+                    <div
+                      className="absolute inset-y-0 left-0 bg-white rounded-full"
+                      style={{ width: `${playedPct}%` }}
+                    />
+                  </div>
+                  <div
+                    className="pointer-events-none absolute w-3 h-3 rounded-full bg-white shadow-md -translate-x-1/2 opacity-0 group-hover/scrub:opacity-100 transition-opacity"
+                    style={{ left: `${playedPct}%` }}
+                  />
+                  {/* Accessible range input overlay for smooth click, drag & mobile touch scrub */}
                   <input
                     type="range"
+                    aria-label="播放进度"
                     min={0}
-                    max={Math.floor(totalDuration)}
-                    value={Math.min(Math.floor(totalDuration), Math.floor(currentTime))}
-                    onChange={(e) => {
-                      const sec = Number(e.target.value);
-                      setRemuxOffset(Math.floor(sec));
-                      setCurrentTime(Math.floor(sec));
-                    }}
-                    className="flex-1 accent-white cursor-pointer"
+                    max={Math.max(1, Math.floor(totalDuration))}
+                    step={mode === 'direct' ? 0.5 : 1}
+                    value={Math.min(Math.max(1, Math.floor(totalDuration)), currentTime)}
+                    onChange={(e) => seekToSeconds(Number(e.target.value))}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
-                  <span className="text-xs text-zinc-500 tabular-nums shrink-0">
-                    {formatDuration(totalDuration)}
-                  </span>
                 </div>
-              )}
+
+                {/* Controls Row */}
+                <div className="flex items-center justify-between gap-2 text-xs text-white">
+                  {/* Left: Play/Pause, ±10s, Volume, Time */}
+                  <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+                    <button
+                      type="button"
+                      onClick={togglePlayPause}
+                      title={isPlaying ? '暂停 (Space)' : '播放 (Space)'}
+                      className="p-1.5 rounded-full hover:bg-white/15 transition"
+                    >
+                      {isPlaying ? (
+                        <Pause className="w-4 h-4 fill-current" />
+                      ) : (
+                        <Play className="w-4 h-4 fill-current" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => seekBySeconds(-10)}
+                      title="快退 10 秒 (←)"
+                      className="hidden sm:inline-flex p-1.5 rounded-full hover:bg-white/15 text-zinc-200 transition"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => seekBySeconds(10)}
+                      title="快进 10 秒 (→)"
+                      className="hidden sm:inline-flex p-1.5 rounded-full hover:bg-white/15 text-zinc-200 transition"
+                    >
+                      <RotateCw className="w-3.5 h-3.5" />
+                    </button>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={toggleMute}
+                        title={isMuted || volume === 0 ? '取消静音 (M)' : '静音 (M)'}
+                        className="p-1.5 rounded-full hover:bg-white/15 transition"
+                      >
+                        {isMuted || volume === 0 ? (
+                          <VolumeX className="w-4 h-4 text-zinc-300" />
+                        ) : volume < 0.5 ? (
+                          <Volume1 className="w-4 h-4" />
+                        ) : (
+                          <Volume2 className="w-4 h-4" />
+                        )}
+                      </button>
+                      <input
+                        type="range"
+                        aria-label="音量"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={isMuted ? 0 : volume}
+                        onChange={(e) => handleVolumeSlider(Number(e.target.value))}
+                        className="hidden sm:block w-16 accent-white cursor-pointer"
+                      />
+                    </div>
+
+                    <span className="text-[11px] sm:text-xs text-zinc-200 tabular-nums whitespace-nowrap ml-1">
+                      {formatDuration(currentTime)}
+                      <span className="text-zinc-500 mx-1">/</span>
+                      <span className="text-zinc-400">{formatDuration(totalDuration)}</span>
+                    </span>
+                  </div>
+
+                  {/* Right: Speed, Online Sub, Sub Adjust, PiP, Cinema Fullscreen */}
+                  <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const idx = SPEEDS.indexOf(playbackRate);
+                        const next = SPEEDS[(idx + 1) % SPEEDS.length];
+                        setPlaybackRate(next);
+                        if (videoRef.current) videoRef.current.playbackRate = next;
+                        flashGestureHud(`${next}x 倍速`);
+                      }}
+                      title="切换倍速 ([ / ])"
+                      className="px-2 py-1 rounded-full hover:bg-white/15 text-[11px] font-medium tabular-nums text-zinc-200 transition"
+                    >
+                      {playbackRate}x
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={openOnlineSubModal}
+                      title="在线搜中文字幕"
+                      className="p-1.5 rounded-full hover:bg-white/15 text-sky-300 transition"
+                    >
+                      <Search className="w-3.5 h-3.5" />
+                    </button>
+
+                    {selectedSubId && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSubStylePanel((v) => !v)}
+                        title="实时调整字幕样式与时间轴"
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] transition ${
+                          showSubStylePanel
+                            ? 'bg-white text-zinc-950 font-medium'
+                            : 'hover:bg-white/15 text-zinc-100'
+                        }`}
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">字幕</span>
+                      </button>
+                    )}
+
+                    {typeof document !== 'undefined' && document.pictureInPictureEnabled && (
+                      <button
+                        type="button"
+                        onClick={() => void togglePiP()}
+                        title="画中画"
+                        className="hidden sm:inline-flex p-1.5 rounded-full hover:bg-white/15 text-zinc-200 transition"
+                      >
+                        <PictureInPicture2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={toggleStageFullscreen}
+                      title={stageFullscreen ? '退出全屏 (F)' : '全屏播放 (F)'}
+                      className="p-1.5 rounded-full hover:bg-white/15 text-white transition"
+                    >
+                      {stageFullscreen ? (
+                        <Minimize2 className="w-4 h-4" />
+                      ) : (
+                        <Maximize2 className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {directPlaybackError && mode === 'direct' && (
@@ -1592,7 +2260,16 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       {selectedSubId && (
                         <button
                           type="button"
-                          onClick={() => setShowSubStylePanel((v) => !v)}
+                          onClick={() => {
+                            setShowSubStylePanel((v) => {
+                              const next = !v;
+                              if (next) {
+                                showControlsTemporarily();
+                                stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              }
+                              return next;
+                            });
+                          }}
                           className={`inline-flex items-center gap-1 transition ${
                             showSubStylePanel ? 'text-white' : 'text-zinc-400 hover:text-white'
                           }`}
@@ -1678,312 +2355,6 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                   )}
                 </div>
               </div>
-
-              {/* Pro Cinema Subtitle Appearance Studio (Fine-Grained Sliders + Live Preview) */}
-              {selectedSubId && showSubStylePanel && (
-                <div className="rounded-2xl bg-white/[0.03] border border-white/[0.08] p-5 space-y-4 text-xs">
-                  {/* Top Bar: Presets + Reset */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.06]">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-zinc-400 mr-1">快捷预设</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSubStyle({
-                            color: '#FFFFFF',
-                            strokeStrength: 2,
-                            bgOpacity: 0,
-                            fontWeight: 600,
-                          })
-                        }
-                        className="px-3 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.14] text-zinc-200 transition"
-                      >
-                        影院描边
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSubStyle({
-                            color: '#FFFFFF',
-                            strokeStrength: 0,
-                            bgOpacity: 55,
-                            fontWeight: 500,
-                          })
-                        }
-                        className="px-3 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.14] text-zinc-200 transition"
-                      >
-                        柔雾胶囊
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSubStyle({
-                            color: '#FDE68A',
-                            strokeStrength: 2,
-                            bgOpacity: 0,
-                            fontWeight: 600,
-                          })
-                        }
-                        className="px-3 py-1 rounded-full bg-amber-400/15 hover:bg-amber-400/25 text-amber-200 transition"
-                      >
-                        经典暖黄
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        updateSubStyle(DEFAULT_SUB_STYLE);
-                        setSubOffsetSec(0);
-                      }}
-                      className="inline-flex items-center gap-1 text-zinc-400 hover:text-white transition"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      恢复默认
-                    </button>
-                  </div>
-
-                  {/* Live Sample Preview Strip */}
-                  <div className="rounded-xl bg-gradient-to-r from-zinc-900 via-zinc-800/70 to-zinc-900 border border-white/[0.06] py-3.5 px-4 flex justify-center overflow-hidden">
-                    <div
-                      className={`inline-flex flex-col items-center gap-0.5 text-center leading-snug ${
-                        subStyle.bgOpacity > 0 ? 'px-4 py-1.5 rounded-2xl backdrop-blur-md' : ''
-                      }`}
-                      style={{
-                        backgroundColor:
-                          subStyle.bgOpacity > 0
-                            ? `rgba(9, 9, 11, ${(subStyle.bgOpacity / 100).toFixed(2)})`
-                            : 'transparent',
-                        textShadow: buildSubtitleTextShadow(subStyle.strokeStrength),
-                      }}
-                    >
-                      {(() => {
-                        const zhEl = (
-                          <div
-                            key="zh"
-                            style={{
-                              fontSize: `${Math.min(34, subStyle.fontSizePx)}px`,
-                              fontWeight: subStyle.fontWeight,
-                              color: subStyle.color,
-                            }}
-                          >
-                            影院级字幕实时预览效果
-                          </div>
-                        );
-                        const jpEl = !subStyle.zhOnly ? (
-                          <div
-                            key="jp"
-                            style={{
-                              fontSize: `${Math.max(
-                                11,
-                                Math.round(
-                                  Math.min(34, subStyle.fontSizePx) * (subStyle.secondaryScale / 100)
-                                )
-                              )}px`,
-                              fontWeight: Math.max(400, subStyle.fontWeight - 100),
-                              color: subStyle.color,
-                              opacity: 0.86,
-                            }}
-                          >
-                            Cinema Subtitle Live Preview
-                          </div>
-                        ) : null;
-                        return subStyle.swapBilingual ? [zhEl, jpEl] : [jpEl, zhEl];
-                      })()}
-                    </div>
-                  </div>
-
-                  {/* Fine-Grained Sliders Grid */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-zinc-400 tabular-nums">
-                        <span>字号大小</span>
-                        <span className="text-white">{subStyle.fontSizePx} px</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={14}
-                        max={52}
-                        value={subStyle.fontSizePx}
-                        onChange={(e) => updateSubStyle({ fontSizePx: Number(e.target.value) })}
-                        className="w-full accent-white cursor-pointer"
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-zinc-400 tabular-nums">
-                        <span>距底高度</span>
-                        <span className="text-white">{subStyle.bottomPct}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={4}
-                        max={42}
-                        value={subStyle.bottomPct}
-                        onChange={(e) => updateSubStyle({ bottomPct: Number(e.target.value) })}
-                        className="w-full accent-white cursor-pointer"
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-zinc-400 tabular-nums">
-                        <span>背景黑底透明度</span>
-                        <span className="text-white">
-                          {subStyle.bgOpacity === 0 ? '无底框' : `${subStyle.bgOpacity}%`}
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={85}
-                        step={5}
-                        value={subStyle.bgOpacity}
-                        onChange={(e) => updateSubStyle({ bgOpacity: Number(e.target.value) })}
-                        className="w-full accent-white cursor-pointer"
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-zinc-400 tabular-nums">
-                        <span>双语副行缩放</span>
-                        <span className="text-white">{subStyle.secondaryScale}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={60}
-                        max={100}
-                        step={5}
-                        value={subStyle.secondaryScale}
-                        onChange={(e) => updateSubStyle({ secondaryScale: Number(e.target.value) })}
-                        className="w-full accent-white cursor-pointer"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Color, Weight, Stroke & Bilingual Toggles */}
-                  <div className="flex flex-wrap items-center justify-between gap-4 pt-3 border-t border-white/[0.06]">
-                    <div className="flex items-center gap-2">
-                      <span className="text-zinc-400">颜色</span>
-                      {SUB_COLOR_SWATCHES.map((sw) => (
-                        <button
-                          key={sw.hex}
-                          type="button"
-                          title={sw.label}
-                          onClick={() => updateSubStyle({ color: sw.hex })}
-                          className={`w-5 h-5 rounded-full border transition ${
-                            subStyle.color.toLowerCase() === sw.hex.toLowerCase()
-                              ? 'border-white scale-110 ring-2 ring-white/40'
-                              : 'border-white/20 hover:scale-105'
-                          }`}
-                          style={{ backgroundColor: sw.hex }}
-                        />
-                      ))}
-                      <label
-                        title="自定义颜色"
-                        className="w-5 h-5 rounded-full border border-white/25 overflow-hidden cursor-pointer flex items-center justify-center bg-gradient-to-tr from-rose-400 via-amber-300 to-sky-400"
-                      >
-                        <input
-                          type="color"
-                          value={subStyle.color}
-                          onChange={(e) => updateSubStyle({ color: e.target.value })}
-                          className="opacity-0 w-full h-full cursor-pointer"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-zinc-400 mr-0.5">描边</span>
-                      {([0, 1, 2, 3] as const).map((lv) => (
-                        <button
-                          key={lv}
-                          type="button"
-                          onClick={() => updateSubStyle({ strokeStrength: lv })}
-                          className={`px-2.5 py-1 rounded-full transition ${
-                            subStyle.strokeStrength === lv
-                              ? 'bg-white text-zinc-950 font-medium'
-                              : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
-                          }`}
-                        >
-                          {['无', '细', '标准', '重'][lv]}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-zinc-400 mr-0.5">字重</span>
-                      {([400, 500, 600, 700] as const).map((w) => (
-                        <button
-                          key={w}
-                          type="button"
-                          onClick={() => updateSubStyle({ fontWeight: w })}
-                          className={`px-2.5 py-1 rounded-full transition ${
-                            subStyle.fontWeight === w
-                              ? 'bg-white text-zinc-950 font-medium'
-                              : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
-                          }`}
-                        >
-                          {{ 400: '细', 500: '常规', 600: '加粗', 700: '特粗' }[w]}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => updateSubStyle({ zhOnly: !subStyle.zhOnly })}
-                        className={`px-3 py-1 rounded-full border transition ${
-                          subStyle.zhOnly
-                            ? 'bg-amber-400/20 border-amber-400/40 text-amber-200'
-                            : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:text-white'
-                        }`}
-                      >
-                        双语仅看中文：{subStyle.zhOnly ? '开' : '关'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updateSubStyle({ swapBilingual: !subStyle.swapBilingual })}
-                        className={`px-3 py-1 rounded-full border transition ${
-                          subStyle.swapBilingual
-                            ? 'bg-white/15 border-white/30 text-white'
-                            : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:text-white'
-                        }`}
-                      >
-                        双语上下互换：{subStyle.swapBilingual ? '开' : '关'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Fine Timing Sync Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-white/[0.06]">
-                    <span className="text-zinc-400 tabular-nums">
-                      时间轴精细同步：
-                      <strong className="text-white ml-1">
-                        {subOffsetSec >= 0 ? `+${subOffsetSec.toFixed(1)}s` : `${subOffsetSec.toFixed(1)}s`}
-                      </strong>
-                    </span>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {[-1, -0.5, -0.1, 0, 0.1, 0.5, 1].map((delta) => (
-                        <button
-                          key={delta}
-                          type="button"
-                          onClick={() =>
-                            delta === 0
-                              ? setSubOffsetSec(0)
-                              : setSubOffsetSec((o) => Number((o + delta).toFixed(1)))
-                          }
-                          className={`px-2.5 py-1 rounded-full tabular-nums transition ${
-                            delta === 0
-                              ? 'bg-white/[0.1] text-white hover:bg-white/[0.18]'
-                              : 'bg-white/[0.05] text-zinc-300 hover:bg-white/[0.12]'
-                          }`}
-                        >
-                          {delta === 0 ? '归零' : delta > 0 ? `+${delta}s` : `${delta}s`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* External Players */}
               <div className="pt-5 border-t border-white/[0.07] space-y-2.5">
