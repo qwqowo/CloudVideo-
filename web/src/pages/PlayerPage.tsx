@@ -90,8 +90,185 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   const [notice, setNotice] = useState('');
   const [showNextPrompt, setShowNextPrompt] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // Touch gesture HUD state (double-tap ±10s, long-press 2x, horizontal swipe seek)
+  const [gestureHud, setGestureHud] = useState<string>('');
+  const [longPress2x, setLongPress2x] = useState(false);
   const lastReportRef = useRef<number>(0);
   const initialResumeDoneRef = useRef<boolean>(false);
+  const gestureHudTimerRef = useRef<number | null>(null);
+  const touchStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startTime: number;
+    baseVideoTime: number;
+    swiping: boolean;
+    swipeDeltaSec: number;
+    longPressTriggered: boolean;
+    prevRate: number;
+    longPressTimer: number | null;
+    lastTapTime: number;
+    lastTapZone: 'left' | 'center' | 'right' | null;
+  }>({
+    startX: 0,
+    startY: 0,
+    startTime: 0,
+    baseVideoTime: 0,
+    swiping: false,
+    swipeDeltaSec: 0,
+    longPressTriggered: false,
+    prevRate: 1,
+    longPressTimer: null,
+    lastTapTime: 0,
+    lastTapZone: null,
+  });
+
+  const flashGestureHud = useCallback((label: string) => {
+    setGestureHud(label);
+    if (gestureHudTimerRef.current) window.clearTimeout(gestureHudTimerRef.current);
+    gestureHudTimerRef.current = window.setTimeout(() => setGestureHud(''), 900);
+  }, []);
+
+  const seekBySeconds = useCallback(
+    (deltaSec: number) => {
+      const v = videoRef.current;
+      if (!v) return;
+      if (mode === 'direct') {
+        const dur = Number.isFinite(v.duration) ? v.duration : Infinity;
+        v.currentTime = Math.min(dur, Math.max(0, v.currentTime + deltaSec));
+      } else {
+        const nextSec = Math.max(0, Math.floor(remuxOffset + v.currentTime + deltaSec));
+        setRemuxOffset(nextSec);
+        setCurrentTime(nextSec);
+      }
+    },
+    [mode, remuxOffset]
+  );
+
+  const handleVideoTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    // Leave bottom 58px untouched so native <video controls> remain 100% responsive
+    if (touch.clientY > rect.bottom - 58) return;
+
+    const st = touchStateRef.current;
+    st.startX = touch.clientX;
+    st.startY = touch.clientY;
+    st.startTime = Date.now();
+    st.baseVideoTime =
+      mode === 'remux'
+        ? remuxOffset + (videoRef.current?.currentTime || 0)
+        : videoRef.current?.currentTime || 0;
+    st.swiping = false;
+    st.swipeDeltaSec = 0;
+    st.longPressTriggered = false;
+
+    if (st.longPressTimer) window.clearTimeout(st.longPressTimer);
+    st.longPressTimer = window.setTimeout(() => {
+      const v = videoRef.current;
+      if (!v || st.swiping) return;
+      st.longPressTriggered = true;
+      st.prevRate = v.playbackRate;
+      v.playbackRate = 2;
+      setLongPress2x(true);
+    }, 360);
+  };
+
+  const handleVideoTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 1) return;
+    const st = touchStateRef.current;
+    if (!st.startTime) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - st.startX;
+    const dy = touch.clientY - st.startY;
+
+    if (!st.swiping && Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      st.swiping = true;
+      if (st.longPressTimer) {
+        window.clearTimeout(st.longPressTimer);
+        st.longPressTimer = null;
+      }
+    }
+
+    if (st.swiping) {
+      // ~1 second per 3.5px of horizontal drag
+      const delta = Math.round(dx / 3.5);
+      st.swipeDeltaSec = delta;
+      const target = Math.max(0, st.baseVideoTime + delta);
+      setGestureHud(
+        `${delta >= 0 ? `+${delta}` : delta} 秒 · ${formatDuration(target)}`
+      );
+    }
+  };
+
+  const handleVideoTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const st = touchStateRef.current;
+    if (st.longPressTimer) {
+      window.clearTimeout(st.longPressTimer);
+      st.longPressTimer = null;
+    }
+
+    if (st.longPressTriggered) {
+      if (videoRef.current) videoRef.current.playbackRate = st.prevRate || playbackRate;
+      setLongPress2x(false);
+      st.longPressTriggered = false;
+      st.startTime = 0;
+      return;
+    }
+
+    if (st.swiping) {
+      const delta = st.swipeDeltaSec;
+      st.swiping = false;
+      st.startTime = 0;
+      setGestureHud('');
+      if (Math.abs(delta) >= 2) {
+        seekBySeconds(delta);
+        flashGestureHud(delta > 0 ? `快进 ${delta} 秒` : `快退 ${Math.abs(delta)} 秒`);
+      }
+      return;
+    }
+
+    if (!st.startTime) return;
+    const elapsed = Date.now() - st.startTime;
+    st.startTime = 0;
+    if (elapsed > 260) return;
+
+    const changed = e.changedTouches[0];
+    if (!changed) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (changed.clientY > rect.bottom - 58) return;
+
+    const relX = (changed.clientX - rect.left) / Math.max(1, rect.width);
+    const zone: 'left' | 'center' | 'right' =
+      relX < 0.35 ? 'left' : relX > 0.65 ? 'right' : 'center';
+
+    const now = Date.now();
+    if (now - st.lastTapTime < 300 && st.lastTapZone === zone) {
+      st.lastTapTime = 0;
+      st.lastTapZone = null;
+      if (zone === 'left') {
+        seekBySeconds(-10);
+        flashGestureHud('« 快退 10 秒');
+      } else if (zone === 'right') {
+        seekBySeconds(10);
+        flashGestureHud('快进 10 秒 »');
+      } else {
+        const v = videoRef.current;
+        if (v) {
+          if (v.paused) {
+            void v.play();
+            flashGestureHud('继续播放');
+          } else {
+            v.pause();
+            flashGestureHud('已暂停');
+          }
+        }
+      }
+    } else {
+      st.lastTapTime = now;
+      st.lastTapZone = zone;
+    }
+  };
 
   const loadMedia = useCallback(async () => {
     setLoading(true);
@@ -490,6 +667,10 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           <span>
             <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">N</kbd> 下一集
           </span>
+          <span className="text-zinc-500 hidden sm:inline">|</span>
+          <span className="text-zinc-400">
+            触屏手势：双击左右 ±10 秒 · 双击中间播/停 · 长按 2 倍速 · 左右滑动调进度
+          </span>
         </div>
       )}
 
@@ -513,7 +694,27 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           {/* Cinema Stage */}
           <div className={episodes.length > 1 ? 'xl:col-span-3 space-y-4' : 'xl:col-span-4 space-y-4'}>
-            <div className="rounded-3xl overflow-hidden bg-black border border-white/[0.08] shadow-[0_28px_70px_-20px_rgba(0,0,0,0.95)] relative">
+            <div
+              className="rounded-3xl overflow-hidden bg-black border border-white/[0.08] shadow-[0_28px_70px_-20px_rgba(0,0,0,0.95)] relative"
+              onTouchStart={handleVideoTouchStart}
+              onTouchMove={handleVideoTouchMove}
+              onTouchEnd={handleVideoTouchEnd}
+            >
+              {/* Long-Press 2x Speed Pill */}
+              {longPress2x && (
+                <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-full bg-black/75 border border-white/20 backdrop-blur-md text-xs font-medium text-white flex items-center gap-1.5 shadow-xl">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  2.0x 倍速快进中 »
+                </div>
+              )}
+
+              {/* Double-Tap / Swipe Seek OSD Pill */}
+              {gestureHud && !longPress2x && (
+                <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 px-5 py-2.5 rounded-full bg-black/75 border border-white/15 backdrop-blur-md text-sm font-medium text-white tabular-nums shadow-2xl">
+                  {gestureHud}
+                </div>
+              )}
+
               <video
                 key={`${mode}-${audioTrack}-${remuxOffset}`}
                 ref={videoRef}

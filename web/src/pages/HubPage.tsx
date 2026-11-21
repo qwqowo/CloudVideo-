@@ -18,6 +18,8 @@ import {
   Edit3,
   ArrowRight,
   KeyRound,
+  Sparkles,
+  Star,
 } from 'lucide-react';
 import { apiFetch, formatBytes, parseMediaTitle } from '../lib/api';
 import type {
@@ -28,6 +30,7 @@ import type {
   RssPreviewItem,
   RssSeenItemRecord,
   RssSubscriptionRecord,
+  TmdbMeta,
 } from '../types';
 
 type SubTab = 'search' | 'rss' | 'indexers';
@@ -35,6 +38,8 @@ type CategoryFilter = 'all' | 'movies' | 'tv' | 'anime';
 type SortMode = 'seeders' | 'date' | 'size_asc' | 'size_desc';
 
 interface HubPageProps {
+  initialSearchQuery?: string | null;
+  onConsumedInitialQuery?: () => void;
   onDownloaded?: (warning?: string) => void;
   onGoLibrary?: () => void;
 }
@@ -79,7 +84,12 @@ function formatTimeAgo(ts: number | null): string {
   return new Date(ts).toLocaleDateString();
 }
 
-export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) => {
+export const HubPage: React.FC<HubPageProps> = ({
+  initialSearchQuery,
+  onConsumedInitialQuery,
+  onDownloaded,
+  onGoLibrary,
+}) => {
   const [subTab, setSubTab] = useState<SubTab>('search');
   const [config, setConfig] = useState<HubConfigResponse | null>(null);
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -88,6 +98,8 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
   const [category, setCategory] = useState<CategoryFilter>('all');
   const [sort, setSort] = useState<SortMode>('seeders');
   const [qualityFilter, setQualityFilter] = useState<'ALL' | '4K' | '1080P'>('ALL');
+  const [bilingual, setBilingual] = useState(true);
+  const [activeTmdb, setActiveTmdb] = useState<TmdbMeta | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchData, setSearchData] = useState<HubSearchResponse | null>(null);
   const [pushingId, setPushingId] = useState<string | null>(null);
@@ -179,19 +191,56 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
     return `${window.location.protocol}//${window.location.hostname}:9696`;
   }, []);
 
+  const runSearch = useCallback(
+    async (
+      qText: string,
+      opts?: { bilingualOverride?: boolean; lockedTmdb?: TmdbMeta | null }
+    ) => {
+      if (!qText.trim()) return;
+      setSearching(true);
+      try {
+        const useBilingual = opts?.bilingualOverride ?? bilingual;
+        const params = new URLSearchParams({
+          q: qText.trim(),
+          category,
+          sort,
+          bilingual: String(useBilingual),
+        });
+        const res = await apiFetch<HubSearchResponse>(`/api/hub/search?${params.toString()}`);
+        setSearchData(res);
+        if (opts?.lockedTmdb !== undefined) {
+          setActiveTmdb(opts.lockedTmdb);
+        } else {
+          setActiveTmdb(res.bilingual?.candidates?.[0] ?? null);
+        }
+      } catch (err) {
+        notify('err', err instanceof Error ? err.message : '搜索失败');
+      } finally {
+        setSearching(false);
+      }
+    },
+    [bilingual, category, sort, notify]
+  );
+
+  useEffect(() => {
+    if (initialSearchQuery && initialSearchQuery.trim()) {
+      setSubTab('search');
+      setQuery(initialSearchQuery.trim());
+      void runSearch(initialSearchQuery.trim());
+      onConsumedInitialQuery?.();
+    }
+  }, [initialSearchQuery, onConsumedInitialQuery, runSearch]);
+
   const handleSearch = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!query.trim()) return;
-    setSearching(true);
-    try {
-      const params = new URLSearchParams({ q: query.trim(), category, sort });
-      const res = await apiFetch<HubSearchResponse>(`/api/hub/search?${params.toString()}`);
-      setSearchData(res);
-    } catch (err) {
-      notify('err', err instanceof Error ? err.message : '搜索失败');
-    } finally {
-      setSearching(false);
-    }
+    await runSearch(query);
+  };
+
+  const handleSelectBilingualCandidate = async (c: TmdbMeta) => {
+    const en = (c.englishTitle || c.originalTitle || c.title).trim();
+    const nextQuery = c.year && en ? `${en} ${c.year}` : en || c.title;
+    setQuery(nextQuery);
+    await runSearch(nextQuery, { bilingualOverride: false, lockedTmdb: c });
   };
 
   const handlePushItem = async (
@@ -208,14 +257,31 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
           title: item.title,
           sequential: true,
           bingeMode,
+          ...(activeTmdb && (activeTmdb.mediaType === 'movie' || activeTmdb.mediaType === 'tv')
+            ? {
+                tmdbCandidate: {
+                  tmdbId: activeTmdb.tmdbId,
+                  mediaType: activeTmdb.mediaType,
+                  title: activeTmdb.title,
+                  originalTitle: activeTmdb.originalTitle,
+                  englishTitle: activeTmdb.englishTitle,
+                  year: activeTmdb.year,
+                  overview: activeTmdb.overview,
+                  rating: activeTmdb.rating,
+                  posterUrl: activeTmdb.posterUrl,
+                  backdropUrl: activeTmdb.backdropUrl,
+                  isAnime: activeTmdb.isAnime,
+                },
+              }
+            : {}),
         }),
       });
       setPushedIds((prev) => ({ ...prev, [item.id]: true }));
       notify(
         'ok',
         bingeMode
-          ? `已按「追剧托管」加入影院：${parseMediaTitle(item.title).title}`
-          : `已加入影院边下边播：${parseMediaTitle(item.title).title}`
+          ? `已按「追剧托管」加入影院：${activeTmdb?.title || parseMediaTitle(item.title).title}`
+          : `已加入影院边下边播：${activeTmdb?.title || parseMediaTitle(item.title).title}`
       );
       onDownloaded?.(res.warning);
     } catch (err) {
@@ -629,6 +695,20 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
                     {q === 'ALL' ? '全部画质' : q}
                   </button>
                 ))}
+
+                <button
+                  type="button"
+                  onClick={() => setBilingual((v) => !v)}
+                  title="配置 TMDB Key 后，搜中文片名将自动联动英文原名并发搜索，并在下载时自动匹配高清海报"
+                  className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs border transition ${
+                    bilingual
+                      ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-200'
+                      : 'bg-white/[0.04] border-transparent text-zinc-500 hover:text-zinc-200'
+                  }`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  双语联动
+                </button>
               </div>
 
               <select
@@ -649,6 +729,91 @@ export const HubPage: React.FC<HubPageProps> = ({ onDownloaded, onGoLibrary }) =
               {searchData.errors.map((err, i) => (
                 <div key={i}>{err}</div>
               ))}
+            </div>
+          )}
+
+          {/* TMDB Bilingual Smart Match Banner */}
+          {(searchData?.bilingual?.candidates?.length || activeTmdb) && (
+            <div className="cinema-surface rounded-3xl p-4 sm:p-5 space-y-3">
+              <div className="flex items-start gap-3.5">
+                {activeTmdb?.posterUrl && (
+                  <img
+                    src={activeTmdb.posterUrl}
+                    alt=""
+                    className="w-11 h-16 rounded-xl object-cover shrink-0 border border-white/10"
+                  />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 text-[11px]">
+                      <Sparkles className="w-3 h-3" />
+                      {searchData?.bilingual?.triggered
+                        ? `已联动英文片名「${searchData.bilingual.expandedQuery}」并发搜片`
+                        : 'TMDB 已锁定海报（推送下载时自动绑定）'}
+                    </span>
+                    {activeTmdb && activeTmdb.rating > 0 && (
+                      <span className="inline-flex items-center gap-1 text-xs text-amber-300 tabular-nums">
+                        <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                        {activeTmdb.rating.toFixed(1)}
+                      </span>
+                    )}
+                  </div>
+                  {activeTmdb && (
+                    <div className="mt-1 text-sm font-medium text-white">
+                      {activeTmdb.title}
+                      {activeTmdb.year ? (
+                        <span className="text-zinc-400 font-normal ml-1.5">
+                          ({activeTmdb.year})
+                        </span>
+                      ) : null}
+                      {activeTmdb.englishTitle && activeTmdb.englishTitle !== activeTmdb.title && (
+                        <span className="text-xs text-zinc-400 font-normal ml-2">
+                          {activeTmdb.englishTitle}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {activeTmdb?.overview && (
+                    <p className="text-xs text-zinc-400 line-clamp-1 mt-0.5">
+                      {activeTmdb.overview}
+                    </p>
+                  )}
+                </div>
+                {activeTmdb && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTmdb(null)}
+                    title="取消自动绑定此海报"
+                    className="p-1.5 rounded-full text-zinc-500 hover:text-white hover:bg-white/[0.08]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {searchData?.bilingual?.candidates && searchData.bilingual.candidates.length > 1 && (
+                <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-white/[0.06] text-xs">
+                  <span className="text-zinc-500 text-[11px]">切换同名版本：</span>
+                  {searchData.bilingual.candidates.map((c) => {
+                    const isCurrent = activeTmdb?.tmdbId === c.tmdbId;
+                    return (
+                      <button
+                        key={`${c.mediaType}-${c.tmdbId}`}
+                        type="button"
+                        onClick={() => void handleSelectBilingualCandidate(c)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] transition ${
+                          isCurrent
+                            ? 'bg-white text-zinc-950 font-medium'
+                            : 'bg-white/[0.05] text-zinc-300 hover:bg-white/[0.12]'
+                        }`}
+                      >
+                        {c.title} {c.year ? `(${c.year})` : ''}
+                        {c.englishTitle && c.englishTitle !== c.title ? ` · ${c.englishTitle}` : ''}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 

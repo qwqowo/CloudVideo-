@@ -5,7 +5,7 @@ import type { AppConfig } from '../config.js';
 import type { AppDatabase } from '../db.js';
 import type { IQBittorrentClient } from '../services/qbittorrent.js';
 import type { CleanupService } from '../services/cleanup.js';
-import type { TmdbService } from '../services/tmdb.js';
+import { classifyMediaCategory, type TmdbService } from '../services/tmdb.js';
 import { isVideoFile, resolveSafePath } from '../services/media.js';
 
 const addMagnetSchema = z.object({
@@ -45,6 +45,7 @@ const tmdbBindSchema = z.object({
       rating: z.number().default(0),
       posterUrl: z.string().default(''),
       backdropUrl: z.string().default(''),
+      isAnime: z.boolean().optional(),
     })
     .optional(),
 });
@@ -202,8 +203,15 @@ export async function registerTorrentRoutes(
                 rating: tmdbRec.rating,
                 posterUrl: tmdbRec.posterUrl,
                 backdropUrl: tmdbRec.backdropUrl,
+                isAnime: Boolean(tmdbRec.isAnime),
               }
             : null;
+
+        const mediaCategory = classifyMediaCategory({
+          tmdb: tmdbPublic,
+          rawName: t.name,
+          videoCount,
+        });
 
         const avgWatchProgress =
           items.length > 0
@@ -235,6 +243,7 @@ export async function registerTorrentRoutes(
           watchProgress: avgWatchProgress,
           bingeMode: policy?.bingeMode ?? false,
           bingeWindow: policy?.bingeWindow ?? 2,
+          mediaCategory,
           tmdb: tmdbPublic,
         };
       })
@@ -516,6 +525,41 @@ export async function registerTorrentRoutes(
     }
     const rec = tmdb.bindManualMatch(hash, parsed.data.candidate);
     return { ok: true, tmdb: rec };
+  });
+
+  app.get('/api/torrents/:hash/credits', { preHandler: requireAuth }, async (req) => {
+    const { hash } = req.params as { hash: string };
+    const rec = db.getTmdbCache(hash);
+    if (!rec || rec.tmdbId === null || (rec.mediaType !== 'movie' && rec.mediaType !== 'tv')) {
+      return { credits: null };
+    }
+    try {
+      const credits = await tmdb.getMediaDetailsAndCredits(rec.mediaType, rec.tmdbId);
+      return { credits };
+    } catch {
+      return { credits: null };
+    }
+  });
+
+  app.get('/api/media/history', { preHandler: requireAuth }, async () => {
+    const history = db.listWatchHistory(80);
+    const activeHashes = new Set(
+      (await qbit.listTorrents().catch(() => [])).map((t) => t.hash.toLowerCase())
+    );
+    const items = history.map((h) => ({
+      ...h,
+      stillInLibrary: activeHashes.has(h.torrentHash.toLowerCase()),
+    }));
+    return { history: items };
+  });
+
+  app.delete('/api/media/history/:id', { preHandler: requireAuth }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return reply.code(400).send({ error: 'Bad Request', message: '无效 ID' });
+    }
+    db.deleteWatchHistory(id);
+    return { ok: true };
   });
 
   app.post('/api/torrents/:hash/files/priority', { preHandler: requireAuth }, async (req, reply) => {

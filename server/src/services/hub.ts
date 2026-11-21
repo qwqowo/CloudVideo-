@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { AppDatabase } from '../db.js';
 import type { IQBittorrentClient } from './qbittorrent.js';
 import type { CleanupService } from './cleanup.js';
+import type { TmdbSearchCandidate, TmdbService } from './tmdb.js';
 
 export type HubCategory = 'all' | 'movies' | 'tv' | 'anime';
 export type HubSort = 'seeders' | 'date' | 'size_asc' | 'size_desc';
@@ -34,12 +35,20 @@ export interface ProwlarrTestResult {
   error?: string;
 }
 
+export interface HubBilingualInfo {
+  triggered: boolean;
+  expandedQuery: string;
+  matchedTitle: string;
+  candidates: TmdbSearchCandidate[];
+}
+
 export interface HubSearchResponse {
   query: string;
   category: HubCategory;
   results: HubSearchResult[];
   sourcesQueried: number;
   indexerBreakdown: Array<{ name: string; count: number }>;
+  bilingual?: HubBilingualInfo;
   errors: string[];
   storageLimitBytes: number;
 }
@@ -286,7 +295,8 @@ export class HubService {
   constructor(
     private db: AppDatabase,
     private qbit: IQBittorrentClient,
-    private cleanup: CleanupService
+    private cleanup: CleanupService,
+    private tmdb?: TmdbService
   ) {}
 
   async testProwlarrConnection(url?: string, apiKey?: string): Promise<ProwlarrTestResult> {
@@ -473,12 +483,47 @@ export class HubService {
     query: string;
     category?: HubCategory;
     sort?: HubSort;
+    bilingual?: boolean;
   }): Promise<HubSearchResponse> {
     const query = opts.query.trim();
     const category: HubCategory = opts.category || 'all';
     const sort: HubSort = opts.sort || 'seeders';
+    const bilingualEnabled = opts.bilingual !== false;
     const settings = this.db.getSettings();
     const storageLimitBytes = Math.round(settings.storageLimitGb * 1024 * 1024 * 1024);
+
+    // Optional TMDB bilingual resolution when searching with CJK characters
+    let bilingual: HubBilingualInfo | undefined;
+    const queriesToRun: string[] = [query];
+    if (
+      bilingualEnabled &&
+      this.tmdb &&
+      settings.tmdbApiKey.trim() &&
+      /[\u4e00-\u9fff]/.test(query)
+    ) {
+      try {
+        const candidates = await this.tmdb.resolveBilingualSuggestions(query);
+        if (candidates.length > 0) {
+          const top = candidates[0];
+          const alt = (top.englishTitle || top.originalTitle || '').trim();
+          const hasLatinAlt =
+            Boolean(alt) &&
+            /[a-zA-Z]{2,}/.test(alt) &&
+            alt.toLowerCase() !== query.toLowerCase();
+          if (hasLatinAlt) {
+            queriesToRun.push(alt);
+          }
+          bilingual = {
+            triggered: hasLatinAlt,
+            expandedQuery: hasLatinAlt ? alt : '',
+            matchedTitle: top.title,
+            candidates: candidates.slice(0, 5),
+          };
+        }
+      } catch {
+        // TMDB lookup failed silently; proceed with original query
+      }
+    }
 
     const tasks: Array<{ label: string; promise: Promise<HubSearchResult[]> }> = [];
     const hasProwlarr = Boolean(settings.prowlarrUrl.trim() && settings.prowlarrApiKey.trim());
@@ -489,24 +534,28 @@ export class HubService {
         settings.prowlarrUrl.trim(),
         settings.prowlarrApiKey.trim()
       );
-      tasks.push({
-        label: 'Prowlarr',
-        promise: this.searchProwlarr(
-          settings.prowlarrUrl.trim(),
-          settings.prowlarrApiKey.trim(),
-          query,
-          category,
-          storageLimitBytes
-        ),
-      });
+      for (const qTerm of queriesToRun) {
+        tasks.push({
+          label: qTerm === query ? 'Prowlarr' : `Prowlarr (${qTerm})`,
+          promise: this.searchProwlarr(
+            settings.prowlarrUrl.trim(),
+            settings.prowlarrApiKey.trim(),
+            qTerm,
+            category,
+            storageLimitBytes
+          ),
+        });
+      }
     }
 
     const torznabList = this.db.listTorznabIndexers().filter((i) => i.enabled);
     for (const idx of torznabList) {
-      tasks.push({
-        label: idx.name,
-        promise: this.searchTorznabIndexer(idx, query, category, storageLimitBytes),
-      });
+      for (const qTerm of queriesToRun) {
+        tasks.push({
+          label: qTerm === query ? idx.name : `${idx.name} (${qTerm})`,
+          promise: this.searchTorznabIndexer(idx, qTerm, category, storageLimitBytes),
+        });
+      }
     }
 
     if (tasks.length === 0) {
@@ -516,7 +565,8 @@ export class HubService {
         results: [],
         sourcesQueried: 0,
         indexerBreakdown: [],
-        errors: ['尚未配置任何搜索索引源，请先在「索引源接入」中配置 Prowlarr 或 Torznab 源'],
+        bilingual,
+        errors: ['尚未配置任何搜索索引源，请先在「片源接入」中配置 Prowlarr 或 Torznab 源'],
         storageLimitBytes,
       };
     }
@@ -539,7 +589,6 @@ export class HubService {
           ? `hash:${item.infoHash}`
           : `title:${item.title.toLowerCase()}:${item.sizeBytes}`;
         const existing = dedup.get(dedupKey);
-        // Prefer downloadable result first, then higher seeders
         const itemDownloadable = Boolean(item.magnetUrl || item.downloadUrl);
         const existingDownloadable = existing ? Boolean(existing.magnetUrl || existing.downloadUrl) : false;
         if (
@@ -560,7 +609,6 @@ export class HubService {
       return b.seeders - a.seeders || b.publishTimestamp - a.publishTimestamp;
     });
 
-    // Build real per-indexer hit count breakdown
     const breakdownMap = new Map<string, number>();
     if (prowlarrMeta?.ok) {
       for (const idx of prowlarrMeta.enabledIndexers) {
@@ -593,6 +641,7 @@ export class HubService {
       results: results.slice(0, 120),
       sourcesQueried: Math.max(realSourceCount, indexerBreakdown.length),
       indexerBreakdown,
+      bilingual,
       errors,
       storageLimitBytes,
     };
@@ -674,6 +723,7 @@ export class HubService {
     sequential?: boolean;
     bingeMode?: boolean;
     bingeWindow?: number;
+    tmdbCandidate?: TmdbSearchCandidate;
   }): Promise<{ ok: true; method: 'magnet' | 'torrent_file'; warning?: string }> {
     const magnetCandidate = (input.magnetUrl || '').trim();
     const urlCandidate = (input.downloadUrl || '').trim();
@@ -695,8 +745,9 @@ export class HubService {
     const sequential = input.sequential !== false;
     const bingeMode = Boolean(input.bingeMode);
     const bingeWindow = input.bingeWindow ?? settings.bingePreloadCount;
+    const needHashDiff = bingeMode || Boolean(input.tmdbCandidate);
 
-    const beforeHashes = bingeMode
+    const beforeHashes = needHashDiff
       ? new Set((await this.qbit.listTorrents().catch(() => [])).map((t) => t.hash))
       : null;
 
@@ -746,29 +797,29 @@ export class HubService {
       }
     }
 
-    if (bingeMode) {
-      if (directHash) {
+    const resolvedHashes: string[] = [];
+    if (directHash) {
+      resolvedHashes.push(directHash);
+    } else if (needHashDiff && beforeHashes) {
+      await new Promise((r) => setTimeout(r, 300));
+      const after = await this.qbit.listTorrents().catch(() => []);
+      for (const t of after) {
+        if (!beforeHashes.has(t.hash)) resolvedHashes.push(t.hash);
+      }
+    }
+
+    for (const h of resolvedHashes) {
+      if (bingeMode) {
         this.db.upsertTorrentPolicy({
-          torrentHash: directHash,
+          torrentHash: h,
           bingeMode: true,
           bingeWindow,
           initialized: false,
         });
-        await this.cleanup.reconcileBingeTorrents(directHash).catch(() => {});
-      } else if (beforeHashes) {
-        await new Promise((r) => setTimeout(r, 300));
-        const after = await this.qbit.listTorrents().catch(() => []);
-        for (const t of after) {
-          if (!beforeHashes.has(t.hash)) {
-            this.db.upsertTorrentPolicy({
-              torrentHash: t.hash,
-              bingeMode: true,
-              bingeWindow,
-              initialized: false,
-            });
-            await this.cleanup.reconcileBingeTorrents(t.hash).catch(() => {});
-          }
-        }
+        await this.cleanup.reconcileBingeTorrents(h).catch(() => {});
+      }
+      if (input.tmdbCandidate && this.tmdb) {
+        this.tmdb.bindManualMatch(h, input.tmdbCandidate);
       }
     }
 

@@ -883,4 +883,244 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
       await new Promise<void>((resolve) => mockServer.close(() => resolve()));
     }
   });
+
+  it('supports TMDB bilingual hub search, cast/credits endpoint, mediaCategory classification, and permanent watch history', async () => {
+    const tmdbMock = http.createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+
+      if (url.pathname === '/search/multi') {
+        const lang = url.searchParams.get('language');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            results: [
+              {
+                id: 103,
+                media_type: 'movie',
+                title: lang === 'en-US' ? 'Taxi Driver' : '出租车司机',
+                original_title: 'Taxi Driver',
+                release_date: '1976-02-09',
+                overview: 'A mentally unstable veteran works as a nighttime taxi driver.',
+                vote_average: 8.2,
+                poster_path: '/poster103.jpg',
+                backdrop_path: '/backdrop103.jpg',
+                genre_ids: [80, 18],
+              },
+              {
+                id: 437068,
+                media_type: 'movie',
+                title: lang === 'en-US' ? 'A Taxi Driver' : '出租车司机',
+                original_title: '택시운전사',
+                release_date: '2017-08-02',
+                overview: 'May 1980 Seoul taxi driver.',
+                vote_average: 8.1,
+                poster_path: '/poster437.jpg',
+                backdrop_path: '/backdrop437.jpg',
+                genre_ids: [18, 36],
+              },
+            ],
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/movie/103') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            id: 103,
+            runtime: 114,
+            tagline: 'On every street in every city...',
+            genres: [
+              { id: 80, name: '犯罪' },
+              { id: 18, name: '剧情' },
+            ],
+            credits: {
+              crew: [{ job: 'Director', name: 'Martin Scorsese' }],
+              cast: [
+                {
+                  id: 380,
+                  name: 'Robert De Niro',
+                  character: 'Travis Bickle',
+                  profile_path: '/deniro.jpg',
+                },
+              ],
+            },
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/api/v1/indexer') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([{ id: 1, name: 'MockEn', protocol: 'torrent', enable: true }]));
+        return;
+      }
+
+      if (url.pathname === '/api/v1/search') {
+        const q = url.searchParams.get('query') || '';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (q.toLowerCase().includes('taxi driver')) {
+          res.end(
+            JSON.stringify([
+              {
+                guid: 'td-1',
+                title: 'Taxi.Driver.1976.1080p.BluRay.x264',
+                indexer: 'MockEn',
+                size: 8 * 1024 * 1024 * 1024,
+                seeders: 55,
+                leechers: 4,
+                infoHash: '7777777777777777777777777777777777777777',
+                magnetUrl: 'magnet:?xt=urn:btih:7777777777777777777777777777777777777777',
+              },
+            ])
+          );
+        } else {
+          res.end(JSON.stringify([]));
+        }
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => tmdbMock.listen(0, '127.0.0.1', resolve));
+    const port = (tmdbMock.address() as any).port;
+    const mockBase = `http://127.0.0.1:${port}`;
+    const prevBase = process.env.TMDB_API_BASE;
+    process.env.TMDB_API_BASE = mockBase;
+
+    const appCtx2 = await buildApp(
+      { ...config, dataDir: path.join(tmpDir, 'data-v31') },
+      { qbit, startScheduler: false }
+    );
+
+    try {
+      const login2 = await appCtx2.app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { password: config.appPassword },
+      });
+      const sc = login2.headers['set-cookie'];
+      const cookie2 = Array.isArray(sc) ? sc[0].split(';')[0] : String(sc).split(';')[0];
+
+      // Configure TMDB + Prowlarr pointing at our local mock
+      await appCtx2.app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { cookie: cookie2 },
+        payload: { tmdbApiKey: 'test-tmdb-key-123456' },
+      });
+      await appCtx2.app.inject({
+        method: 'PUT',
+        url: '/api/hub/prowlarr',
+        headers: { cookie: cookie2 },
+        payload: { prowlarrUrl: mockBase, prowlarrApiKey: 'key' },
+      });
+
+      // 1) Bilingual search: Chinese query '出租车司机' auto-expands to 'Taxi Driver' and hits MockEn!
+      const sRes = await appCtx2.app.inject({
+        method: 'GET',
+        url: `/api/hub/search?q=${encodeURIComponent('出租车司机')}`,
+        headers: { cookie: cookie2 },
+      });
+      assert.equal(sRes.statusCode, 200);
+      const sBody = sRes.json();
+      assert.equal(sBody.bilingual?.triggered, true);
+      assert.equal(sBody.bilingual?.expandedQuery, 'Taxi Driver');
+      assert.equal(sBody.bilingual?.candidates?.length, 2);
+      assert.equal(sBody.bilingual?.candidates[1].englishTitle, 'A Taxi Driver');
+      assert.equal(sBody.results.length, 1);
+
+      // 2) Push download with tmdbCandidate -> immediately binds TMDB cache to torrent hash
+      const tdHash = '7777777777777777777777777777777777777777';
+      const dlRes = await appCtx2.app.inject({
+        method: 'POST',
+        url: '/api/hub/download',
+        headers: { cookie: cookie2 },
+        payload: {
+          magnetUrl: `magnet:?xt=urn:btih:${tdHash}`,
+          title: 'Taxi Driver',
+          tmdbCandidate: sBody.bilingual.candidates[0],
+        },
+      });
+      assert.equal(dlRes.statusCode, 200);
+      assert.equal(appCtx2.db.getTmdbCache(tdHash)?.tmdbId, 103);
+
+      // 3) Credits endpoint returns genres, director & cast
+      const credRes = await appCtx2.app.inject({
+        method: 'GET',
+        url: `/api/torrents/${tdHash}/credits`,
+        headers: { cookie: cookie2 },
+      });
+      assert.equal(credRes.statusCode, 200);
+      const cred = credRes.json().credits;
+      assert.equal(cred.runtimeMin, 114);
+      assert.deepEqual(cred.directors, ['Martin Scorsese']);
+      assert.equal(cred.cast[0].name, 'Robert De Niro');
+
+      // 4) mediaCategory classification & permanent watch history surviving torrent unload
+      const animeHash = '8888888888888888888888888888888888888888';
+      qbit.seed(
+        {
+          hash: animeHash,
+          name: '[LoliHouse] Frieren - 01 [1080p].mkv',
+          size: 500000,
+          downloaded: 500000,
+          amount_left: 0,
+          progress: 1,
+          dlspeed: 0,
+          upspeed: 0,
+          state: 'pausedUP',
+          eta: 0,
+          added_on: Math.floor(Date.now() / 1000),
+          completion_on: Math.floor(Date.now() / 1000),
+          save_path: downloadDir,
+          content_path: downloadDir,
+          seq_dl: true,
+          f_l_piece_prio: true,
+          num_seeds: 1,
+          num_leechs: 0,
+          ratio: 0,
+        },
+        [{ index: 0, name: '[LoliHouse] Frieren - 01 [1080p].mkv', size: 500000, progress: 1, priority: 1 }]
+      );
+
+      const listRes = await appCtx2.app.inject({
+        method: 'GET',
+        url: '/api/torrents',
+        headers: { cookie: cookie2 },
+      });
+      const animeItem = listRes.json().torrents.find((t: any) => t.hash === animeHash);
+      assert.equal(animeItem.mediaCategory, 'anime');
+
+      await appCtx2.cleanup.recordProgress({
+        torrentHash: animeHash,
+        fileIndex: 0,
+        positionSec: 1200,
+        durationSec: 1400,
+        relativePath: '[LoliHouse] Frieren - 01 [1080p].mkv',
+        sizeBytes: 500000,
+      });
+      // Unload entire torrent -> watch_history must STILL preserve it with stillInLibrary=false!
+      await appCtx2.cleanup.unloadTorrent(animeHash, 'manual_torrent_unload');
+
+      const whRes = await appCtx2.app.inject({
+        method: 'GET',
+        url: '/api/media/history',
+        headers: { cookie: cookie2 },
+      });
+      assert.equal(whRes.statusCode, 200);
+      const hist = whRes.json().history;
+      assert.equal(hist.length, 1);
+      assert.equal(hist[0].torrentHash, animeHash);
+      assert.equal(hist[0].stillInLibrary, false);
+    } finally {
+      if (prevBase === undefined) delete process.env.TMDB_API_BASE;
+      else process.env.TMDB_API_BASE = prevBase;
+      await appCtx2.close();
+      await new Promise<void>((resolve) => tmdbMock.close(() => resolve()));
+    }
+  });
 });

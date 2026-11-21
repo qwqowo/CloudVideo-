@@ -113,7 +113,27 @@ export interface TmdbCacheRecord {
   rating: number;
   posterUrl: string;
   backdropUrl: string;
+  isAnime?: boolean;
   fetchedAt: number;
+}
+
+export interface WatchHistoryRecord {
+  id: number;
+  torrentHash: string;
+  fileIndex: number;
+  title: string;
+  fileName: string;
+  mediaCategory: string;
+  posterUrl: string;
+  backdropUrl: string;
+  year: string;
+  rating: number;
+  durationSec: number;
+  positionSec: number;
+  progress: number;
+  completed: boolean;
+  watchedAt: number;
+  updatedAt: number;
 }
 
 export interface CustomSubtitleRecord {
@@ -287,7 +307,42 @@ export class AppDatabase {
         PRIMARY KEY (subscription_id, item_guid),
         FOREIGN KEY (subscription_id) REFERENCES rss_subscriptions(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS tmdb_credits_cache (
+        media_type TEXT NOT NULL,
+        tmdb_id INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (media_type, tmdb_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS watch_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        torrent_hash TEXT NOT NULL,
+        file_index INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        file_name TEXT NOT NULL DEFAULT '',
+        media_category TEXT NOT NULL DEFAULT 'movie',
+        poster_url TEXT NOT NULL DEFAULT '',
+        backdrop_url TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        rating REAL NOT NULL DEFAULT 0,
+        duration_sec REAL NOT NULL DEFAULT 0,
+        position_sec REAL NOT NULL DEFAULT 0,
+        progress REAL NOT NULL DEFAULT 0,
+        completed INTEGER NOT NULL DEFAULT 0,
+        watched_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (torrent_hash, file_index)
+      );
     `);
+
+    // Safe forward migration for existing databases
+    try {
+      this.db.exec('ALTER TABLE tmdb_cache ADD COLUMN is_anime INTEGER NOT NULL DEFAULT 0');
+    } catch {
+      // column already exists
+    }
   }
 
   close(): void {
@@ -636,6 +691,7 @@ export class AppDatabase {
       rating: Number(r.rating || 0),
       posterUrl: String(r.poster_url || ''),
       backdropUrl: String(r.backdrop_url || ''),
+      isAnime: Boolean(r.is_anime),
       fetchedAt: Number(r.fetched_at),
     };
   }
@@ -655,6 +711,7 @@ export class AppDatabase {
         rating: Number(r.rating || 0),
         posterUrl: String(r.poster_url || ''),
         backdropUrl: String(r.backdrop_url || ''),
+        isAnime: Boolean(r.is_anime),
         fetchedAt: Number(r.fetched_at),
       };
       map.set(rec.torrentHash, rec);
@@ -667,8 +724,8 @@ export class AppDatabase {
       .prepare(
         `INSERT INTO tmdb_cache (
           torrent_hash, tmdb_id, media_type, title, original_title, year, overview,
-          rating, poster_url, backdrop_url, fetched_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          rating, poster_url, backdrop_url, is_anime, fetched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(torrent_hash) DO UPDATE SET
           tmdb_id = excluded.tmdb_id,
           media_type = excluded.media_type,
@@ -679,6 +736,7 @@ export class AppDatabase {
           rating = excluded.rating,
           poster_url = excluded.poster_url,
           backdrop_url = excluded.backdrop_url,
+          is_anime = excluded.is_anime,
           fetched_at = excluded.fetched_at`
       )
       .run(
@@ -692,8 +750,119 @@ export class AppDatabase {
         rec.rating,
         rec.posterUrl,
         rec.backdropUrl,
+        rec.isAnime ? 1 : 0,
         rec.fetchedAt
       );
+  }
+
+  getTmdbCreditsCache(mediaType: string, tmdbId: number): { payloadJson: string; fetchedAt: number } | null {
+    const r = this.db
+      .prepare('SELECT payload_json, fetched_at FROM tmdb_credits_cache WHERE media_type = ? AND tmdb_id = ?')
+      .get(mediaType, tmdbId) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      payloadJson: String(r.payload_json),
+      fetchedAt: Number(r.fetched_at),
+    };
+  }
+
+  upsertTmdbCreditsCache(mediaType: string, tmdbId: number, payloadJson: string, fetchedAt = Date.now()): void {
+    this.db
+      .prepare(
+        `INSERT INTO tmdb_credits_cache (media_type, tmdb_id, payload_json, fetched_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(media_type, tmdb_id) DO UPDATE SET
+           payload_json = excluded.payload_json,
+           fetched_at = excluded.fetched_at`
+      )
+      .run(mediaType, tmdbId, payloadJson, fetchedAt);
+  }
+
+  // ---- Permanent Watch History ----
+  upsertWatchHistory(entry: {
+    torrentHash: string;
+    fileIndex: number;
+    title: string;
+    fileName: string;
+    mediaCategory?: string;
+    posterUrl?: string;
+    backdropUrl?: string;
+    year?: string;
+    rating?: number;
+    durationSec: number;
+    positionSec: number;
+    progress: number;
+    completed: boolean;
+    now?: number;
+  }): void {
+    const now = entry.now ?? Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO watch_history (
+          torrent_hash, file_index, title, file_name, media_category,
+          poster_url, backdrop_url, year, rating,
+          duration_sec, position_sec, progress, completed, watched_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(torrent_hash, file_index) DO UPDATE SET
+          title = excluded.title,
+          file_name = excluded.file_name,
+          media_category = excluded.media_category,
+          poster_url = CASE WHEN excluded.poster_url != '' THEN excluded.poster_url ELSE watch_history.poster_url END,
+          backdrop_url = CASE WHEN excluded.backdrop_url != '' THEN excluded.backdrop_url ELSE watch_history.backdrop_url END,
+          year = CASE WHEN excluded.year != '' THEN excluded.year ELSE watch_history.year END,
+          rating = CASE WHEN excluded.rating > 0 THEN excluded.rating ELSE watch_history.rating END,
+          duration_sec = excluded.duration_sec,
+          position_sec = excluded.position_sec,
+          progress = MAX(watch_history.progress, excluded.progress),
+          completed = MAX(watch_history.completed, excluded.completed),
+          watched_at = excluded.watched_at,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        entry.torrentHash.toLowerCase(),
+        entry.fileIndex,
+        entry.title,
+        entry.fileName,
+        entry.mediaCategory || 'movie',
+        entry.posterUrl || '',
+        entry.backdropUrl || '',
+        entry.year || '',
+        entry.rating || 0,
+        entry.durationSec,
+        entry.positionSec,
+        entry.progress,
+        entry.completed ? 1 : 0,
+        now,
+        now
+      );
+  }
+
+  listWatchHistory(limit = 60): WatchHistoryRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM watch_history ORDER BY watched_at DESC LIMIT ?')
+      .all(limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      torrentHash: String(r.torrent_hash),
+      fileIndex: Number(r.file_index),
+      title: String(r.title),
+      fileName: String(r.file_name || ''),
+      mediaCategory: String(r.media_category || 'movie'),
+      posterUrl: String(r.poster_url || ''),
+      backdropUrl: String(r.backdrop_url || ''),
+      year: String(r.year || ''),
+      rating: Number(r.rating || 0),
+      durationSec: Number(r.duration_sec || 0),
+      positionSec: Number(r.position_sec || 0),
+      progress: Number(r.progress || 0),
+      completed: Boolean(r.completed),
+      watchedAt: Number(r.watched_at),
+      updatedAt: Number(r.updated_at),
+    }));
+  }
+
+  deleteWatchHistory(id: number): void {
+    this.db.prepare('DELETE FROM watch_history WHERE id = ?').run(id);
   }
 
   deleteTmdbCache(torrentHash: string): void {

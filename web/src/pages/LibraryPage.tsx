@@ -23,12 +23,26 @@ import {
   ChevronUp,
   Download,
   Zap,
+  History,
+  Users,
+  Clapperboard,
+  Tv,
+  Sparkles as AnimeIcon,
 } from 'lucide-react';
-import type { TmdbMeta, TorrentFileItem, TorrentsResponse, TorrentSummary } from '../types';
+import type {
+  MediaCategory,
+  TmdbMediaCredits,
+  TmdbMeta,
+  TorrentFileItem,
+  TorrentsResponse,
+  TorrentSummary,
+  WatchHistoryRecord,
+} from '../types';
 import {
   apiFetch,
   formatBytes,
   formatCountdown,
+  formatDuration,
   formatSpeed,
   parseMediaTitle,
   translateTorrentState,
@@ -39,12 +53,13 @@ interface LibraryPageProps {
   loading: boolean;
   onRefresh: () => void;
   onOpenAdd: () => void;
-  onGoDiscover: () => void;
+  onGoDiscover: (prefillQuery?: string) => void;
   onPlay: (torrentHash: string, fileIndex: number, torrentName: string) => void;
   initialDetailHash?: string | null;
   onClearInitialDetail?: () => void;
 }
 
+type CategoryTab = 'all' | MediaCategory | 'history';
 type FilterMode = 'all' | 'playable' | 'downloading' | 'scheduled';
 type ViewMode = 'grid' | 'list';
 
@@ -166,10 +181,14 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
   onClearInitialDetail,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [categoryTab, setCategoryTab] = useState<CategoryTab>('all');
   const [filter, setFilter] = useState<FilterMode>('all');
   const [query, setQuery] = useState('');
   const [detailHash, setDetailHash] = useState<string | null>(null);
   const [filesMap, setFilesMap] = useState<Record<string, TorrentFileItem[]>>({});
+  const [creditsMap, setCreditsMap] = useState<Record<string, TmdbMediaCredits | null>>({});
+  const [watchHistory, setWatchHistory] = useState<WatchHistoryRecord[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [showOtherFiles, setShowOtherFiles] = useState(false);
   const [tmdbSearchOpen, setTmdbSearchOpen] = useState(false);
@@ -177,6 +196,24 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
   const [tmdbResults, setTmdbResults] = useState<TmdbMeta[]>([]);
   const [tmdbSearching, setTmdbSearching] = useState(false);
   const [toast, setToast] = useState('');
+
+  const loadWatchHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await apiFetch<{ history: WatchHistoryRecord[] }>('/api/media/history');
+      setWatchHistory(res.history);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (categoryTab === 'history') {
+      void loadWatchHistory();
+    }
+  }, [categoryTab]);
 
   useEffect(() => {
     if (initialDetailHash) {
@@ -211,6 +248,11 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
       return;
     }
     void fetchFiles(detailHash);
+    void apiFetch<{ credits: TmdbMediaCredits | null }>(
+      `/api/torrents/${encodeURIComponent(detailHash)}/credits`
+    )
+      .then((res) => setCreditsMap((prev) => ({ ...prev, [detailHash]: res.credits })))
+      .catch(() => {});
     const id = setInterval(() => void fetchFiles(detailHash), 4000);
     return () => clearInterval(id);
   }, [detailHash]);
@@ -243,9 +285,24 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
     return withBackdrop || allTorrents.find((t) => t.playableCount > 0) || allTorrents[0] || null;
   }, [allTorrents, continueWatching]);
 
+  const categoryCounts = useMemo(() => {
+    const counts = { movie: 0, tv: 0, anime: 0 };
+    for (const t of allTorrents) {
+      const cat = t.mediaCategory || (t.videoCount > 1 ? 'tv' : 'movie');
+      if (cat === 'anime') counts.anime++;
+      else if (cat === 'tv') counts.tv++;
+      else counts.movie++;
+    }
+    return counts;
+  }, [allTorrents]);
+
   const filteredTorrents = useMemo(() => {
     const q = query.trim().toLowerCase();
     return allTorrents.filter((t) => {
+      if (categoryTab !== 'all' && categoryTab !== 'history') {
+        const cat = t.mediaCategory || (t.videoCount > 1 ? 'tv' : 'movie');
+        if (cat !== categoryTab) return false;
+      }
       if (
         q &&
         !t.name.toLowerCase().includes(q) &&
@@ -258,7 +315,15 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
       if (filter === 'scheduled') return t.nextDeleteAt !== null;
       return true;
     });
-  }, [allTorrents, filter, query]);
+  }, [allTorrents, categoryTab, filter, query]);
+
+  const detailCredits = detailHash ? creditsMap[detailHash] ?? null : null;
+
+  const handleDeleteHistoryItem = async (id: number) => {
+    await apiFetch(`/api/media/history/${id}`, { method: 'DELETE' }).catch(() => {});
+    setWatchHistory((prev) => prev.filter((item) => item.id !== id));
+    showToast('已从观看历史移除');
+  };
 
   const detailTorrent = useMemo(
     () => allTorrents.find((t) => t.hash === detailHash) ?? null,
@@ -484,8 +549,8 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
         </div>
       )}
 
-      {/* ==================== EMPTY WELCOME STATE ==================== */}
-      {allTorrents.length === 0 ? (
+      {/* ==================== EMPTY WELCOME STATE (or Watch History toggle) ==================== */}
+      {allTorrents.length === 0 && categoryTab !== 'history' ? (
         <div className="cinema-surface rounded-3xl p-12 sm:p-16 text-center max-w-2xl mx-auto mt-6">
           <div className="w-14 h-14 mx-auto rounded-2xl bg-white/[0.07] border border-white/10 flex items-center justify-center text-white mb-5">
             <Film className="w-6 h-6" />
@@ -497,7 +562,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
             直接在线搜索片源一键边下边播，或粘贴磁力链接。支持自动追更、原生直出，看完自动释放硬盘空间。
           </p>
           <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-            <button onClick={onGoDiscover} className="btn-ivory px-6 py-2.5 text-sm">
+            <button onClick={() => onGoDiscover()} className="btn-ivory px-6 py-2.5 text-sm">
               <Compass className="w-4 h-4" />
               去发现片源
             </button>
@@ -505,12 +570,19 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
               <Plus className="w-4 h-4" />
               粘贴磁力 / 上传种子
             </button>
+            <button
+              onClick={() => setCategoryTab('history')}
+              className="btn-ghost px-5 py-2.5 text-sm"
+            >
+              <History className="w-4 h-4" />
+              观看历史
+            </button>
           </div>
         </div>
       ) : (
         <>
           {/* ==================== CINEMATIC HERO SPOTLIGHT ==================== */}
-          {heroItem && !query.trim() && filter === 'all' && (
+          {heroItem && !query.trim() && filter === 'all' && categoryTab === 'all' && (
             <section className="relative rounded-3xl overflow-hidden border border-white/[0.08] bg-[#111115] min-h-[290px] sm:min-h-[360px] flex items-end shadow-[0_28px_70px_-24px_rgba(0,0,0,0.95)]">
               {heroBg && (
                 <img
@@ -587,7 +659,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
           )}
 
           {/* ==================== CONTINUE WATCHING RAIL ==================== */}
-          {continueWatching.length > 1 && !query.trim() && filter === 'all' && (
+          {continueWatching.length > 1 && !query.trim() && filter === 'all' && categoryTab === 'all' && (
             <section className="space-y-3.5">
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-semibold text-white tracking-tight">继续观看</h2>
@@ -635,77 +707,222 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
             </section>
           )}
 
-          {/* ==================== LIBRARY FILTER BAR & POSTER WALL ==================== */}
+          {/* ==================== CATEGORY COLLECTIONS & POSTER WALL ==================== */}
           <section className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* Primary Collection Tabs (Movies / TV / Anime / History) */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
+                {(
+                  [
+                    { id: 'all' as const, label: `全部片库`, count: allTorrents.length, icon: Film },
+                    { id: 'movie' as const, label: `电影`, count: categoryCounts.movie, icon: Clapperboard },
+                    { id: 'tv' as const, label: `剧集`, count: categoryCounts.tv, icon: Tv },
+                    { id: 'anime' as const, label: `动漫`, count: categoryCounts.anime, icon: AnimeIcon },
+                    { id: 'history' as const, label: `观看历史`, count: null, icon: History },
+                  ]
+                ).map((c) => {
+                  const Icon = c.icon;
+                  const active = categoryTab === c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => setCategoryTab(c.id)}
+                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium whitespace-nowrap transition ${
+                        active
+                          ? 'bg-white text-zinc-950 shadow-sm'
+                          : 'bg-white/[0.04] text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.08]'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      <span>{c.label}</span>
+                      {c.count !== null && c.count > 0 && (
+                        <span
+                          className={`text-[10px] tabular-nums ${
+                            active ? 'text-zinc-600' : 'text-zinc-500'
+                          }`}
+                        >
+                          {c.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {categoryTab !== 'history' && (
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 sm:w-52">
+                    <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="搜索片库..."
+                      className="w-full rounded-full bg-white/[0.04] border border-white/[0.08] pl-9 pr-3.5 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+                    />
+                  </div>
+
+                  <div className="flex items-center p-0.5 rounded-full bg-white/[0.04] border border-white/[0.07]">
+                    <button
+                      onClick={() => setViewMode('grid')}
+                      title="海报视图"
+                      className={`p-1.5 rounded-full transition ${
+                        viewMode === 'grid' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setViewMode('list')}
+                      title="列表视图"
+                      className={`p-1.5 rounded-full transition ${
+                        viewMode === 'list' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Quiet Status Sub-Filters */}
+            {categoryTab !== 'history' && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 {(
                   [
-                    { id: 'all', label: `全部 (${allTorrents.length})` },
-                    {
-                      id: 'playable',
-                      label: `可播 (${allTorrents.filter((t) => t.playableCount > 0).length})`,
-                    },
-                    {
-                      id: 'downloading',
-                      label: `下载中 (${allTorrents.filter((t) => t.progress < 0.999).length})`,
-                    },
-                    {
-                      id: 'scheduled',
-                      label: `待自动清理 (${allTorrents.filter((t) => t.nextDeleteAt !== null).length})`,
-                    },
+                    { id: 'all', label: '全部状态' },
+                    { id: 'playable', label: '可直接播' },
+                    { id: 'downloading', label: '下载中' },
+                    { id: 'scheduled', label: '待自动清理' },
                   ] as const
                 ).map((f) => (
                   <button
                     key={f.id}
                     onClick={() => setFilter(f.id)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-medium transition ${
+                    className={`px-3 py-1 rounded-full text-[11px] transition ${
                       filter === f.id
-                        ? 'bg-white text-zinc-950'
-                        : 'bg-white/[0.04] text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.08]'
+                        ? 'bg-white/15 text-white font-medium'
+                        : 'text-zinc-500 hover:text-zinc-200'
                     }`}
                   >
                     {f.label}
                   </button>
                 ))}
               </div>
+            )}
 
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1 sm:w-56">
-                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索片库..."
-                    className="w-full rounded-full bg-white/[0.04] border border-white/[0.08] pl-9 pr-3.5 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-                  />
+            {categoryTab === 'history' ? (
+              /* ==================== PERMANENT WATCH HISTORY WALL ==================== */
+              loadingHistory ? (
+                <div className="cinema-surface rounded-3xl p-12 text-center text-xs text-zinc-400">
+                  正在加载观看历史...
                 </div>
-
-                <div className="flex items-center p-0.5 rounded-full bg-white/[0.04] border border-white/[0.07]">
-                  <button
-                    onClick={() => setViewMode('grid')}
-                    title="海报视图"
-                    className={`p-1.5 rounded-full transition ${
-                      viewMode === 'grid' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    <LayoutGrid className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => setViewMode('list')}
-                    title="列表视图"
-                    className={`p-1.5 rounded-full transition ${
-                      viewMode === 'list' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    <List className="w-3.5 h-3.5" />
-                  </button>
+              ) : watchHistory.length === 0 ? (
+                <div className="cinema-surface rounded-3xl p-12 text-center space-y-2">
+                  <History className="w-7 h-7 text-zinc-600 mx-auto" />
+                  <div className="text-sm text-zinc-300">暂无观看历史</div>
+                  <p className="text-xs text-zinc-500">
+                    播放影片后会自动记录在这里，即便文件看完后被自动卸载也会保留你的观影足迹。
+                  </p>
                 </div>
-              </div>
-            </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {watchHistory.map((h) => {
+                    const wp = Math.min(100, Math.round(h.progress * 100));
+                    const art = h.backdropUrl || h.posterUrl;
+                    return (
+                      <div
+                        key={h.id}
+                        className="cinema-card rounded-2xl overflow-hidden flex flex-col"
+                      >
+                        <div className="relative aspect-video w-full bg-gradient-to-br from-zinc-900 to-zinc-950 overflow-hidden">
+                          {art ? (
+                            <img src={art} alt="" className="w-full h-full object-cover opacity-80" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <Film className="w-7 h-7 text-zinc-700" />
+                            </div>
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-transparent" />
 
-            {filteredTorrents.length === 0 ? (
+                          <div className="absolute top-3 left-3 flex items-center gap-1.5">
+                            <span
+                              className={`px-2.5 py-0.5 rounded-full text-[10px] backdrop-blur-md ${
+                                h.completed
+                                  ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/30'
+                                  : 'bg-black/60 text-zinc-200'
+                              }`}
+                            >
+                              {h.completed ? '已看完' : `看到 ${wp}%`}
+                            </span>
+                            {!h.stillInLibrary && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-black/60 text-zinc-400 backdrop-blur-md">
+                                已自动释放空间
+                              </span>
+                            )}
+                          </div>
+
+                          <button
+                            onClick={() => void handleDeleteHistoryItem(h.id)}
+                            title="删除该条记录"
+                            className="absolute top-2.5 right-2.5 p-1.5 rounded-full bg-black/50 hover:bg-rose-500/80 text-zinc-300 hover:text-white transition"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+
+                          <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-white/10">
+                            <div
+                              className={h.completed ? 'h-full bg-emerald-400' : 'h-full bg-white'}
+                              style={{ width: `${wp}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-4 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-white truncate" title={h.title}>
+                              {h.title}
+                            </div>
+                            <div className="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-1.5 tabular-nums">
+                              {h.year && <span>{h.year}</span>}
+                              {h.durationSec > 0 && (
+                                <>
+                                  {h.year && <span>·</span>}
+                                  <span>
+                                    {formatDuration(h.positionSec)} / {formatDuration(h.durationSec)}
+                                  </span>
+                                </>
+                              )}
+                              <span>·</span>
+                              <span>{new Date(h.watchedAt).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+
+                          {h.stillInLibrary ? (
+                            <button
+                              onClick={() => onPlay(h.torrentHash, h.fileIndex, h.title)}
+                              className="btn-ivory px-3.5 py-1.5 text-xs shrink-0"
+                            >
+                              <Play className="w-3 h-3 fill-current" />
+                              重看
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => onGoDiscover(h.title)}
+                              className="btn-ghost px-3 py-1.5 text-xs shrink-0"
+                            >
+                              <Compass className="w-3 h-3" />
+                              再搜
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )
+            ) : filteredTorrents.length === 0 ? (
               <div className="cinema-surface rounded-3xl p-12 text-center text-sm text-zinc-400">
                 当前筛选下没有匹配的影片
               </div>
@@ -965,6 +1182,23 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
                         {detailTorrent.tmdb.overview}
                       </p>
                     )}
+                    {detailCredits && (detailCredits.genres.length > 0 || detailCredits.directors.length > 0 || detailCredits.runtimeMin > 0) && (
+                      <div className="flex items-center gap-2 flex-wrap mt-2 text-[11px] text-zinc-300">
+                        {detailCredits.genres.map((g) => (
+                          <span key={g} className="px-2 py-0.5 rounded-full bg-white/[0.08]">
+                            {g}
+                          </span>
+                        ))}
+                        {detailCredits.runtimeMin > 0 && (
+                          <span className="text-zinc-400">{detailCredits.runtimeMin} 分钟</span>
+                        )}
+                        {detailCredits.directors.length > 0 && (
+                          <span className="text-zinc-400">
+                            导演：{detailCredits.directors.join(' / ')}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="text-[11px] text-zinc-500 mt-1.5 truncate" title={detailTorrent.name}>
                       {detailTorrent.name}
                     </div>
@@ -1125,8 +1359,49 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
               </div>
             )}
 
-            {/* Video Episodes List */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            {/* Video Episodes + Cast Section */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              {/* Cast & Crew Horizontal Strip (when TMDB credits exist) */}
+              {detailCredits && detailCredits.cast.length > 0 && (
+                <div className="space-y-2.5 pb-4 border-b border-white/[0.06]">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+                    <Users className="w-3.5 h-3.5 text-zinc-400" />
+                    演职员表
+                  </div>
+                  <div className="flex items-start gap-3 overflow-x-auto pb-1">
+                    {detailCredits.cast.map((actor) => (
+                      <div key={actor.id} className="w-16 shrink-0 text-center space-y-1">
+                        <div className="w-14 h-14 mx-auto rounded-full overflow-hidden bg-white/[0.06] border border-white/10 flex items-center justify-center">
+                          {actor.profileUrl ? (
+                            <img
+                              src={actor.profileUrl}
+                              alt={actor.name}
+                              loading="lazy"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-xs text-zinc-500">
+                              {actor.name.slice(0, 1)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-zinc-200 truncate" title={actor.name}>
+                          {actor.name}
+                        </div>
+                        {actor.character && (
+                          <div
+                            className="text-[10px] text-zinc-500 truncate"
+                            title={actor.character}
+                          >
+                            {actor.character}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs font-medium text-zinc-300">
                   剧集与视频文件 ({videoFiles.length})

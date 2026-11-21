@@ -5,6 +5,7 @@ import type { AppDatabase, MediaItemRecord } from '../db.js';
 import type { IQBittorrentClient } from './qbittorrent.js';
 import type { NotifierService } from './notifier.js';
 import { isVideoFile, resolveSafePath } from './media.js';
+import { classifyMediaCategory } from './tmdb.js';
 
 export interface StorageStats {
   usedBytes: number;
@@ -261,6 +262,32 @@ export class CleanupService {
       now,
     });
 
+    // Record permanent watch history (survives auto-unload!)
+    if (params.positionSec >= 5 || progress >= 0.02 || watchedAt !== null) {
+      const tmdbRec = this.db.getTmdbCache(item.torrentHash);
+      const shortFile = (item.relativePath || '').split('/').pop() || item.relativePath || '未知影片';
+      this.db.upsertWatchHistory({
+        torrentHash: item.torrentHash,
+        fileIndex: item.fileIndex,
+        title: tmdbRec?.title || shortFile,
+        fileName: shortFile,
+        mediaCategory: classifyMediaCategory({
+          tmdb: tmdbRec,
+          rawName: item.relativePath || shortFile,
+          videoCount: 1,
+        }),
+        posterUrl: tmdbRec?.posterUrl || '',
+        backdropUrl: tmdbRec?.backdropUrl || '',
+        year: tmdbRec?.year || '',
+        rating: tmdbRec?.rating || 0,
+        durationSec: duration,
+        positionSec: params.positionSec,
+        progress,
+        completed: watchedAt !== null,
+        now,
+      });
+    }
+
     const preloadedNext = await this.maybePreloadNextEpisode(
       item.torrentHash,
       item.fileIndex,
@@ -302,6 +329,29 @@ export class CleanupService {
         options.immediate || settings.autoCleanupEnabled ? now + delayMs : existing?.deleteAfterAt ?? null,
       pinned: options.immediate ? false : existing?.pinned ?? false,
       lastPlayedAt: now,
+      now,
+    });
+
+    const tmdbRec = this.db.getTmdbCache(item.torrentHash);
+    const shortFile = (item.relativePath || '').split('/').pop() || item.relativePath || '未知影片';
+    this.db.upsertWatchHistory({
+      torrentHash: item.torrentHash,
+      fileIndex: item.fileIndex,
+      title: tmdbRec?.title || shortFile,
+      fileName: shortFile,
+      mediaCategory: classifyMediaCategory({
+        tmdb: tmdbRec,
+        rawName: item.relativePath || shortFile,
+        videoCount: 1,
+      }),
+      posterUrl: tmdbRec?.posterUrl || '',
+      backdropUrl: tmdbRec?.backdropUrl || '',
+      year: tmdbRec?.year || '',
+      rating: tmdbRec?.rating || 0,
+      durationSec: item.durationSec,
+      positionSec: item.durationSec || item.positionSec,
+      progress: 1,
+      completed: true,
       now,
     });
 

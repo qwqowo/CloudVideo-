@@ -53,7 +53,7 @@ export async function buildApp(
   const notifier = new NotifierService(db);
   const tmdb = new TmdbService(db);
   const cleanup = new CleanupService(config, db, qbit, notifier);
-  const hub = new HubService(db, qbit, cleanup);
+  const hub = new HubService(db, qbit, cleanup, tmdb);
   const rss = new RssService(db, hub, notifier);
   const requireAuth = createAuthHook(config.jwtSecret);
 

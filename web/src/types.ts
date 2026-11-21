@@ -15,16 +15,57 @@ export interface PrimaryVideoInfo {
   existsOnDisk: boolean;
 }
 
+export type MediaCategory = 'movie' | 'tv' | 'anime';
+
 export interface TmdbMeta {
   tmdbId: number;
   mediaType: 'movie' | 'tv' | string;
   title: string;
   originalTitle: string;
+  englishTitle?: string;
   year: string;
   overview: string;
   rating: number;
   posterUrl: string;
   backdropUrl: string;
+  isAnime?: boolean;
+}
+
+export interface TmdbCastMember {
+  id: number;
+  name: string;
+  character: string;
+  profileUrl: string;
+}
+
+export interface TmdbMediaCredits {
+  tmdbId: number;
+  mediaType: 'movie' | 'tv';
+  genres: string[];
+  runtimeMin: number;
+  tagline: string;
+  directors: string[];
+  cast: TmdbCastMember[];
+}
+
+export interface WatchHistoryRecord {
+  id: number;
+  torrentHash: string;
+  fileIndex: number;
+  title: string;
+  fileName: string;
+  mediaCategory: MediaCategory | string;
+  posterUrl: string;
+  backdropUrl: string;
+  year: string;
+  rating: number;
+  durationSec: number;
+  positionSec: number;
+  progress: number;
+  completed: boolean;
+  watchedAt: number;
+  updatedAt: number;
+  stillInLibrary: boolean;
 }
 
 export interface TorrentSummary {
@@ -52,6 +93,7 @@ export interface TorrentSummary {
   watchProgress: number;
   bingeMode: boolean;
   bingeWindow: number;
+  mediaCategory?: MediaCategory;
   tmdb: TmdbMeta | null;
 }
 
@@ -237,12 +279,20 @@ export interface HubSearchResult {
   unavailableReason?: string;
 }
 
+export interface HubBilingualInfo {
+  triggered: boolean;
+  expandedQuery: string;
+  matchedTitle: string;
+  candidates: TmdbMeta[];
+}
+
 export interface HubSearchResponse {
   query: string;
   category: 'all' | 'movies' | 'tv' | 'anime';
   results: HubSearchResult[];
   sourcesQueried: number;
   indexerBreakdown?: Array<{ name: string; count: number }>;
+  bilingual?: HubBilingualInfo;
   errors: string[];
   storageLimitBytes: number;
 }

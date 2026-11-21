@@ -28,6 +28,20 @@ const torznabUpdateSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+const tmdbCandidateSchema = z.object({
+  tmdbId: z.number().int(),
+  mediaType: z.enum(['movie', 'tv']),
+  title: z.string(),
+  originalTitle: z.string().default(''),
+  englishTitle: z.string().optional(),
+  year: z.string().default(''),
+  overview: z.string().default(''),
+  rating: z.number().default(0),
+  posterUrl: z.string().default(''),
+  backdropUrl: z.string().default(''),
+  isAnime: z.boolean().optional(),
+});
+
 const hubDownloadSchema = z.object({
   magnetUrl: z.string().optional().default(''),
   downloadUrl: z.string().optional().default(''),
@@ -35,6 +49,7 @@ const hubDownloadSchema = z.object({
   sequential: z.boolean().optional().default(true),
   bingeMode: z.boolean().optional().default(false),
   bingeWindow: z.number().int().min(1).max(10).optional(),
+  tmdbCandidate: tmdbCandidateSchema.optional(),
 });
 
 const rssCreateSchema = z.object({
@@ -140,7 +155,7 @@ export async function registerHubRoutes(
 
   // ---- Aggregated Torrent Search & One-Click Push ----
   app.get('/api/hub/search', { preHandler: requireAuth }, async (req, reply) => {
-    const q = req.query as { q?: string; category?: string; sort?: string };
+    const q = req.query as { q?: string; category?: string; sort?: string; bilingual?: string };
     const query = (q.q || '').trim();
     if (!query) {
       return reply.code(400).send({ error: 'Bad Request', message: '请输入要搜索的片名或关键词' });
@@ -151,8 +166,9 @@ export async function registerHubRoutes(
       ? (q.category as HubCategory)
       : 'all';
     const sort = allowedSorts.includes(q.sort as HubSort) ? (q.sort as HubSort) : 'seeders';
+    const bilingual = q.bilingual !== 'false';
 
-    return hub.search({ query, category, sort });
+    return hub.search({ query, category, sort, bilingual });
   });
 
   app.post('/api/hub/download', { preHandler: requireAuth }, async (req, reply) => {

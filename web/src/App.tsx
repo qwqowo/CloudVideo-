@@ -21,6 +21,7 @@ export const App: React.FC = () => {
   const [tab, setTab] = useState<NavTab>('library');
   const [player, setPlayer] = useState<ActivePlayer | null>(null);
   const [pendingDetailHash, setPendingDetailHash] = useState<string | null>(null);
+  const [pendingHubQuery, setPendingHubQuery] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [data, setData] = useState<TorrentsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -134,13 +135,18 @@ export const App: React.FC = () => {
           loading={loading}
           onRefresh={() => void fetchTorrents()}
           onOpenAdd={() => setAddOpen(true)}
-          onGoDiscover={() => setTab('hub')}
+          onGoDiscover={(prefillQuery) => {
+            if (prefillQuery) setPendingHubQuery(prefillQuery);
+            setTab('hub');
+          }}
           onPlay={(hash, fileIndex, torrentName) => setPlayer({ hash, fileIndex, torrentName })}
           initialDetailHash={pendingDetailHash}
           onClearInitialDetail={() => setPendingDetailHash(null)}
         />
       ) : tab === 'hub' ? (
         <HubPage
+          initialSearchQuery={pendingHubQuery}
+          onConsumedInitialQuery={() => setPendingHubQuery(null)}
           onDownloaded={(warning) => {
             if (warning) setBanner(warning);
             void fetchTorrents();
