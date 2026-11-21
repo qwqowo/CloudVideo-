@@ -21,6 +21,7 @@ import {
   resolveSafePath,
   sanitizeAndDeduplicateWebVtt,
 } from '../services/media.js';
+import { OnlineSubtitleService, type SubtitleProvider } from '../services/subtitles.js';
 
 export const activeFfmpegProcesses = new Set<ChildProcess>();
 const inflightThumbs = new Map<string, Promise<boolean>>();
@@ -65,6 +66,7 @@ export async function registerStreamRoutes(
   }
 ): Promise<void> {
   const { config, db, qbit, requireAuth } = deps;
+  const onlineSubs = new OnlineSubtitleService(db, config.dataDir);
 
   async function authorizeStream(
     req: FastifyRequest,
@@ -288,6 +290,103 @@ export async function registerStreamRoutes(
           url: `/api/stream/${encodeURIComponent(hash.toLowerCase())}/${idx}/subtitle/${encodeURIComponent(subId)}?token=${encodeURIComponent(streamToken)}`,
         },
       };
+    }
+  );
+
+  app.get(
+    '/api/stream/:hash/:fileIndex/subtitles/search',
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
+      const idx = Number(fileIndex);
+      if (!Number.isInteger(idx) || idx < 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: '无效的文件索引' });
+      }
+      const target = await resolveFile(hash, idx);
+      if (!target) {
+        return reply.code(404).send({ error: 'NotFound', message: '视频文件不存在' });
+      }
+      const q = req.query as { q?: string; lang?: string };
+      const tmdbRec = db.getTmdbCache(hash);
+      const userQuery = (q.q || '').trim();
+      const isCustomUserQuery =
+        Boolean(userQuery) &&
+        userQuery !== (tmdbRec?.title || '') &&
+        userQuery !== (tmdbRec?.originalTitle || '');
+      const defaultQuery =
+        userQuery || tmdbRec?.title || tmdbRec?.originalTitle || '';
+
+      return onlineSubs.search({
+        filePath: target.absPath,
+        fileName: target.fileName,
+        query: defaultQuery,
+        tmdbId: isCustomUserQuery ? null : (tmdbRec?.tmdbId ?? null),
+        mediaType: isCustomUserQuery ? undefined : (tmdbRec?.mediaType || undefined),
+        lang: q.lang === 'all' ? 'all' : 'zh',
+      });
+    }
+  );
+
+  app.post(
+    '/api/stream/:hash/:fileIndex/subtitles/download',
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { hash, fileIndex } = req.params as { hash: string; fileIndex: string };
+      const idx = Number(fileIndex);
+      if (!Number.isInteger(idx) || idx < 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: '无效的文件索引' });
+      }
+      const target = await resolveFile(hash, idx);
+      if (!target) {
+        return reply.code(404).send({ error: 'NotFound', message: '视频文件不存在' });
+      }
+
+      const body = (req.body || {}) as {
+        provider?: SubtitleProvider;
+        providerId?: string;
+        title?: string;
+        downloadUrl?: string;
+        fileHint?: string;
+      };
+      if (
+        !body.provider ||
+        !['shooter', 'assrt', 'subdl', 'opensubtitles'].includes(body.provider) ||
+        !body.providerId
+      ) {
+        return reply.code(400).send({ error: 'Bad Request', message: '字幕参数无效' });
+      }
+
+      try {
+        const rec = await onlineSubs.downloadAndInstall({
+          torrentHash: hash,
+          fileIndex: idx,
+          videoFileName: target.fileName,
+          provider: body.provider,
+          providerId: body.providerId,
+          title: body.title || '在线字幕',
+          downloadUrl: body.downloadUrl,
+          fileHint: body.fileHint,
+        });
+
+        const streamToken = signStreamToken(config.jwtSecret, hash, idx, 12 * 3600);
+        const subId = `usr:${rec.id}`;
+        return {
+          ok: true,
+          subtitle: {
+            id: subId,
+            source: 'uploaded',
+            codec: 'webvtt',
+            language: 'zh',
+            title: `[在线] ${rec.title}`,
+            url: `/api/stream/${encodeURIComponent(hash.toLowerCase())}/${idx}/subtitle/${encodeURIComponent(subId)}?token=${encodeURIComponent(streamToken)}`,
+          },
+        };
+      } catch (err) {
+        return reply.code(502).send({
+          error: 'OnlineSubtitleDownloadError',
+          message: err instanceof Error ? err.message : '在线下载字幕失败',
+        });
+      }
     }
   );
 

@@ -20,8 +20,19 @@ import {
   SlidersHorizontal,
   RotateCcw,
   X,
+  Search,
+  Download,
+  Loader2,
+  Sparkles,
 } from 'lucide-react';
-import type { DownloadLiveStatus, ProbeResponse, SubtitleTrack, TorrentFileItem } from '../types';
+import type {
+  DownloadLiveStatus,
+  OnlineSubtitleResult,
+  OnlineSubtitleSearchResponse,
+  ProbeResponse,
+  SubtitleTrack,
+  TorrentFileItem,
+} from '../types';
 import {
   apiFetch,
   formatBytes,
@@ -236,6 +247,14 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   const [stageFullscreen, setStageFullscreen] = useState(false);
   const [nativeVideoFullscreen, setNativeVideoFullscreen] = useState(false);
   const [uploadingSub, setUploadingSub] = useState(false);
+  // Online subtitle search & 1-click mount state
+  const [showOnlineSubModal, setShowOnlineSubModal] = useState(false);
+  const [onlineSubQuery, setOnlineSubQuery] = useState('');
+  const [onlineSubLang, setOnlineSubLang] = useState<'zh' | 'all'>('zh');
+  const [onlineSubLoading, setOnlineSubLoading] = useState(false);
+  const [onlineSubData, setOnlineSubData] = useState<OnlineSubtitleSearchResponse | null>(null);
+  const [onlineSubError, setOnlineSubError] = useState('');
+  const [downloadingSubId, setDownloadingSubId] = useState<string>('');
   const [playbackRate, setPlaybackRate] = useState(1);
   const [remuxOffset, setRemuxOffset] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -434,6 +453,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     setRemuxOffset(0);
     setCurrentTime(0);
     setSubOffsetSec(0);
+    setOnlineSubData(null);
+    setOnlineSubQuery('');
+    setOnlineSubError('');
 
     try {
       const [probe, fileList] = await Promise.all([
@@ -608,6 +630,11 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showOnlineSubModal) {
+        setShowOnlineSubModal(false);
+        return;
+      }
+      if (showOnlineSubModal) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -659,7 +686,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [mode, playbackRate, nextEpisode, onSelectEpisode]);
+  }, [mode, playbackRate, nextEpisode, onSelectEpisode, showOnlineSubModal, toggleStageFullscreen]);
 
   const reportProgress = useCallback(
     async (posSec: number, force = false) => {
@@ -759,6 +786,80 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       setNotice(err instanceof Error ? err.message : '字幕上传失败');
     } finally {
       setUploadingSub(false);
+    }
+  };
+
+  const searchOnlineSubtitles = useCallback(
+    async (overrideQuery?: string, overrideLang?: 'zh' | 'all') => {
+      setOnlineSubLoading(true);
+      setOnlineSubError('');
+      try {
+        const params = new URLSearchParams();
+        const qVal = overrideQuery !== undefined ? overrideQuery.trim() : onlineSubQuery.trim();
+        const langVal = overrideLang ?? onlineSubLang;
+        if (qVal) params.set('q', qVal);
+        params.set('lang', langVal);
+
+        const res = await apiFetch<OnlineSubtitleSearchResponse>(
+          `/api/stream/${encodeURIComponent(torrentHash)}/${fileIndex}/subtitles/search?${params.toString()}`
+        );
+        setOnlineSubData(res);
+        if (!qVal && res.query) {
+          setOnlineSubQuery(res.query);
+        }
+      } catch (err) {
+        setOnlineSubError(err instanceof Error ? err.message : '在线搜索字幕失败');
+      } finally {
+        setOnlineSubLoading(false);
+      }
+    },
+    [torrentHash, fileIndex, onlineSubQuery, onlineSubLang]
+  );
+
+  const openOnlineSubModal = () => {
+    setShowOnlineSubModal(true);
+    setOnlineSubError('');
+    if (!onlineSubData) {
+      void searchOnlineSubtitles('', onlineSubLang);
+    }
+  };
+
+  const handleDownloadOnlineSub = async (item: OnlineSubtitleResult) => {
+    setDownloadingSubId(item.id);
+    setOnlineSubError('');
+    try {
+      const res = await apiFetch<{ ok: boolean; subtitle: SubtitleTrack }>(
+        `/api/stream/${encodeURIComponent(torrentHash)}/${fileIndex}/subtitles/download`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            provider: item.provider,
+            providerId: item.providerId,
+            title: item.title,
+            downloadUrl: item.downloadUrl,
+            fileHint: item.fileHint,
+          }),
+        }
+      );
+      setProbeData((prev) =>
+        prev
+          ? {
+              ...prev,
+              probe: {
+                ...prev.probe,
+                subtitles: [res.subtitle, ...prev.probe.subtitles],
+              },
+            }
+          : prev
+      );
+      setSelectedSubId(res.subtitle.id);
+      setSubOffsetSec(0);
+      setShowOnlineSubModal(false);
+      setNotice(`已在线挂载字幕（${item.providerLabel}）：${item.title}`);
+    } catch (err) {
+      setOnlineSubError(err instanceof Error ? err.message : '在线下载挂载字幕失败');
+    } finally {
+      setDownloadingSubId('');
     }
   };
 
@@ -869,6 +970,15 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           <span className="px-3 py-1.5 rounded-full bg-white/[0.06] border border-white/[0.08] text-zinc-200">
             {mode === 'direct' ? '原生直出' : '无损 Remux'}
           </span>
+          {probeData && (
+            <button
+              onClick={openOnlineSubModal}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border border-sky-400/30 bg-sky-500/15 hover:bg-sky-500/25 text-sky-100 transition"
+            >
+              <Search className="w-3.5 h-3.5" />
+              在线搜字幕
+            </button>
+          )}
           {selectedSubId && (
             <button
               onClick={() => setShowSubStylePanel((v) => !v)}
@@ -1471,6 +1581,14 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       字幕
                     </span>
                     <div className="flex items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={openOnlineSubModal}
+                        className="text-sky-300 hover:text-sky-200 inline-flex items-center gap-1 transition"
+                      >
+                        <Search className="w-3 h-3" />
+                        在线找
+                      </button>
                       {selectedSubId && (
                         <button
                           type="button"
@@ -1520,6 +1638,16 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       </option>
                     ))}
                   </select>
+                  {probeData.probe.subtitles.length === 0 && (
+                    <button
+                      type="button"
+                      onClick={openOnlineSubModal}
+                      className="mt-2 w-full py-1.5 px-3 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/25 text-[11px] text-sky-200 flex items-center justify-center gap-1.5 transition"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      本片暂无内置字幕，点此在线搜中文字幕
+                    </button>
+                  )}
                   {selectedSubId && (
                     <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400 tabular-nums">
                       <span>偏移 {subOffsetSec >= 0 ? `+${subOffsetSec}s` : `${subOffsetSec}s`}</span>
@@ -1961,6 +2089,206 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           )}
         </div>
       ) : null}
+
+      {/* Online Subtitle Search & 1-Click Mount Modal */}
+      {showOnlineSubModal && probeData && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+          onClick={() => setShowOnlineSubModal(false)}
+        >
+          <div
+            className="cinema-glass rounded-3xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl border border-white/15"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-white/[0.08] flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Subtitles className="w-4 h-4 text-sky-300" />
+                  在线寻找中文字幕
+                </h2>
+                <p className="text-xs text-zinc-400 truncate mt-0.5" title={probeData.fileName}>
+                  当前影片：{probeData.fileName}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowOnlineSubModal(false)}
+                className="p-1.5 rounded-full bg-white/[0.06] hover:bg-white/[0.14] text-zinc-300 hover:text-white transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Search Controls */}
+            <div className="px-6 py-4 border-b border-white/[0.06] space-y-3 bg-white/[0.02]">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void searchOnlineSubtitles(onlineSubQuery, onlineSubLang);
+                }}
+                className="flex items-center gap-2"
+              >
+                <input
+                  type="text"
+                  value={onlineSubQuery}
+                  onChange={(e) => setOnlineSubQuery(e.target.value)}
+                  placeholder="输入中/英文片名或集数关键词（如 Taxi Driver、出租车司机）"
+                  className="cinema-input flex-1 px-4 py-2 text-xs"
+                />
+                <button
+                  type="submit"
+                  disabled={onlineSubLoading}
+                  className="btn-ivory px-4 py-2 text-xs shrink-0"
+                >
+                  {onlineSubLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Search className="w-3.5 h-3.5" />
+                  )}
+                  搜索
+                </button>
+              </form>
+
+              <div className="flex items-center justify-between gap-3 flex-wrap text-[11px]">
+                <div className="inline-flex p-0.5 rounded-full bg-white/[0.05] border border-white/[0.07]">
+                  {(
+                    [
+                      { id: 'zh', label: '中文字幕优先' },
+                      { id: 'all', label: '全部语言' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        setOnlineSubLang(opt.id);
+                        void searchOnlineSubtitles(onlineSubQuery, opt.id);
+                      }}
+                      className={`px-3 py-1 rounded-full transition ${
+                        onlineSubLang === opt.id
+                          ? 'bg-white text-zinc-950 font-medium'
+                          : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {onlineSubData && (
+                  <span className="text-zinc-400">
+                    已查源：{onlineSubData.providersUsed.join(' · ') || '无'}
+                  </span>
+                )}
+              </div>
+
+              {onlineSubData &&
+                !onlineSubData.configuredProviders.assrt &&
+                !onlineSubData.configuredProviders.subdl &&
+                !onlineSubData.configuredProviders.opensubtitles && (
+                  <div className="rounded-2xl bg-amber-500/10 border border-amber-400/25 px-3.5 py-2.5 text-[11px] text-amber-200/95 leading-relaxed">
+                    当前仅启用内置的「射手哈希直配」（免 Key）。若想按片名搜到海量简繁双语字幕，可前往
+                    <strong className="text-amber-100 mx-1">设置 → 海报、字幕与推送</strong>
+                    免费填入 <strong className="text-amber-100">伪射手 Assrt Token</strong> 或{' '}
+                    <strong className="text-amber-100">SubDL API Key</strong>。
+                  </div>
+                )}
+
+              {onlineSubError && (
+                <div className="rounded-2xl bg-rose-500/10 border border-rose-500/30 px-3.5 py-2 text-xs text-rose-200 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{onlineSubError}</span>
+                </div>
+              )}
+
+              {onlineSubData && onlineSubData.errors.length > 0 && (
+                <div className="text-[11px] text-zinc-500">
+                  部分源提示：{onlineSubData.errors.join('；')}
+                </div>
+              )}
+            </div>
+
+            {/* Results List */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2.5">
+              {onlineSubLoading ? (
+                <div className="py-16 text-center space-y-2">
+                  <Loader2 className="w-6 h-6 text-zinc-400 animate-spin mx-auto" />
+                  <div className="text-xs text-zinc-300">正在并发检索多源字幕库...</div>
+                </div>
+              ) : !onlineSubData || onlineSubData.results.length === 0 ? (
+                <div className="py-14 text-center space-y-2">
+                  <Subtitles className="w-7 h-7 text-zinc-600 mx-auto" />
+                  <div className="text-sm text-zinc-300">暂未匹配到在线字幕</div>
+                  <p className="text-xs text-zinc-500 max-w-md mx-auto">
+                    可尝试更换英文原名（如 Taxi Driver）重新搜索，或在设置中补充伪射手 Assrt / SubDL API Key 以扩展词库。
+                  </p>
+                </div>
+              ) : (
+                onlineSubData.results.map((item) => {
+                  const isBusy = downloadingSubId === item.id;
+                  const badgeStyle =
+                    item.provider === 'shooter'
+                      ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/30'
+                      : item.provider === 'assrt'
+                        ? 'bg-amber-500/15 text-amber-200 border-amber-400/30'
+                        : item.provider === 'subdl'
+                          ? 'bg-sky-500/15 text-sky-200 border-sky-400/30'
+                          : 'bg-purple-500/15 text-purple-200 border-purple-400/30';
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.07] p-3.5 flex items-center justify-between gap-4 transition"
+                    >
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <div className="text-xs font-medium text-white break-all leading-snug">
+                          {item.title}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                          <span className={`px-2 py-0.5 rounded-full border ${badgeStyle}`}>
+                            {item.providerLabel}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-white/[0.06] text-zinc-300">
+                            {item.language}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-white/[0.06] text-zinc-400 font-mono">
+                            {item.format}
+                          </span>
+                          {typeof item.downloads === 'number' && item.downloads > 0 && (
+                            <span className="text-zinc-500 tabular-nums">
+                              {item.downloads} 次下载
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={Boolean(downloadingSubId)}
+                        onClick={() => void handleDownloadOnlineSub(item)}
+                        className="btn-ivory px-3.5 py-2 text-xs shrink-0 disabled:opacity-50"
+                      >
+                        {isBusy ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            挂载中
+                          </>
+                        ) : (
+                          <>
+                            <Download className="w-3.5 h-3.5" />
+                            一键挂载
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

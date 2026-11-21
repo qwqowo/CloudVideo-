@@ -155,6 +155,35 @@ export interface SubtitleTrack {
   url: string;
 }
 
+export type SubtitleProvider = 'shooter' | 'assrt' | 'subdl' | 'opensubtitles';
+
+export interface OnlineSubtitleResult {
+  id: string;
+  provider: SubtitleProvider;
+  providerLabel: string;
+  providerId: string;
+  title: string;
+  language: string;
+  format: string;
+  downloads?: number;
+  score?: number;
+  downloadUrl?: string;
+  fileHint?: string;
+}
+
+export interface OnlineSubtitleSearchResponse {
+  query: string;
+  results: OnlineSubtitleResult[];
+  providersUsed: string[];
+  configuredProviders: {
+    shooter: boolean;
+    assrt: boolean;
+    subdl: boolean;
+    opensubtitles: boolean;
+  };
+  errors: string[];
+}
+
 export interface DownloadLiveStatus {
   dlSpeed: number;
   state: string;
@@ -213,6 +242,11 @@ export interface AppSettings {
   telegramBotToken: string;
   telegramChatId: string;
   webhookUrl: string;
+  assrtToken: string;
+  subdlApiKey: string;
+  openSubtitlesApiKey: string;
+  openSubtitlesUsername: string;
+  openSubtitlesPassword: string;
 }
 
 export interface CleanupLogRecord {

@@ -23,6 +23,11 @@ export interface AppSettings {
   webhookUrl: string;
   prowlarrUrl: string;
   prowlarrApiKey: string;
+  assrtToken: string;
+  subdlApiKey: string;
+  openSubtitlesApiKey: string;
+  openSubtitlesUsername: string;
+  openSubtitlesPassword: string;
 }
 
 export interface TorznabIndexerRecord {
@@ -181,6 +186,11 @@ export class AppDatabase {
       webhookUrl: process.env.WEBHOOK_URL || '',
       prowlarrUrl: (hubDefaults.prowlarrUrl ?? process.env.PROWLARR_URL ?? 'http://prowlarr:9696').replace(/\/+$/, ''),
       prowlarrApiKey: hubDefaults.prowlarrApiKey ?? process.env.PROWLARR_API_KEY ?? '',
+      assrtToken: process.env.ASSRT_TOKEN || '',
+      subdlApiKey: process.env.SUBDL_API_KEY || '',
+      openSubtitlesApiKey: process.env.OPENSUBTITLES_API_KEY || '',
+      openSubtitlesUsername: process.env.OPENSUBTITLES_USERNAME || '',
+      openSubtitlesPassword: process.env.OPENSUBTITLES_PASSWORD || '',
     };
     this.init();
   }
@@ -396,6 +406,11 @@ export class AppDatabase {
       webhookUrl: str('webhookUrl', this.defaults.webhookUrl),
       prowlarrUrl: str('prowlarrUrl', this.defaults.prowlarrUrl),
       prowlarrApiKey: str('prowlarrApiKey', this.defaults.prowlarrApiKey),
+      assrtToken: str('assrtToken', this.defaults.assrtToken),
+      subdlApiKey: str('subdlApiKey', this.defaults.subdlApiKey),
+      openSubtitlesApiKey: str('openSubtitlesApiKey', this.defaults.openSubtitlesApiKey),
+      openSubtitlesUsername: str('openSubtitlesUsername', this.defaults.openSubtitlesUsername),
+      openSubtitlesPassword: str('openSubtitlesPassword', this.defaults.openSubtitlesPassword),
     };
   }
 
@@ -423,6 +438,11 @@ export class AppDatabase {
       'webhookUrl',
       'prowlarrUrl',
       'prowlarrApiKey',
+      'assrtToken',
+      'subdlApiKey',
+      'openSubtitlesApiKey',
+      'openSubtitlesUsername',
+      'openSubtitlesPassword',
     ];
     for (const k of keys) {
       if (partial[k] !== undefined) {

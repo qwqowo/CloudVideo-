@@ -152,7 +152,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-white">影院设置</h1>
           <p className="text-xs text-zinc-400 mt-1">
-            管理自动清理规则、下载网络加速、TMDB 海报刮削与离线通知
+            管理自动清理规则、下载网络加速、TMDB 海报刮削、在线字幕源与离线通知
           </p>
         </div>
 
@@ -173,7 +173,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
         {[
           { id: 'storage' as const, label: '空间与清理', icon: HardDrive },
           { id: 'network' as const, label: '网络与 BT', icon: Globe },
-          { id: 'integrations' as const, label: '海报与推送', icon: Bell },
+          { id: 'integrations' as const, label: '海报、字幕与推送', icon: Bell },
         ].map((t) => {
           const Icon = t.icon;
           const active = subTab === t.id;
@@ -450,6 +450,97 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onUpdated }) => {
                 placeholder="输入 TMDB API Key 或 Read Access Token"
                 className="cinema-input w-full px-3.5 py-2.5 text-xs font-mono"
               />
+            </div>
+
+            <div className="cinema-surface rounded-3xl p-6 space-y-4">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="text-sm font-semibold text-white">在线中文字幕源</div>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    播放页点「在线搜字幕」可多源并发搜索并一键自动解压、转码挂载（支持 GBK/UTF-16/ZIP/7z/RAR）。
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[11px] text-emerald-200 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  射手哈希直配已内置（免 Key）
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs text-zinc-300 mb-1">
+                    伪射手 Assrt API Token（强烈推荐 · 中文最强）
+                  </label>
+                  <input
+                    type="password"
+                    value={settings.assrtToken || ''}
+                    onChange={(e) => setSettings({ ...settings, assrtToken: e.target.value })}
+                    placeholder="在 assrt.net 免费注册后到用户面板复制 Token"
+                    className="cinema-input w-full px-3.5 py-2.5 text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-zinc-500 mt-1">
+                    覆盖绝大多数简繁双语电影/剧集字幕，免费账号即可使用
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-300 mb-1">
+                    SubDL API Key（推荐 · 免费额度高）
+                  </label>
+                  <input
+                    type="password"
+                    value={settings.subdlApiKey || ''}
+                    onChange={(e) => setSettings({ ...settings, subdlApiKey: e.target.value })}
+                    placeholder="在 subdl.com 免费申请 API Key"
+                    className="cinema-input w-full px-3.5 py-2.5 text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-zinc-500 mt-1">
+                    支持按 TMDB ID 精准匹配电影/季/集，自动解包选中文轨
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-white/[0.06] space-y-3">
+                <div className="text-xs text-zinc-400">OpenSubtitles.com REST API v1（可选补充源）</div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-zinc-400 mb-1">API Key</label>
+                    <input
+                      type="password"
+                      value={settings.openSubtitlesApiKey || ''}
+                      onChange={(e) =>
+                        setSettings({ ...settings, openSubtitlesApiKey: e.target.value })
+                      }
+                      placeholder="OpenSubtitles API Key"
+                      className="cinema-input w-full px-3 py-2 text-xs font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-zinc-400 mb-1">用户名（可选，提升限额）</label>
+                    <input
+                      type="text"
+                      value={settings.openSubtitlesUsername || ''}
+                      onChange={(e) =>
+                        setSettings({ ...settings, openSubtitlesUsername: e.target.value })
+                      }
+                      placeholder="可选"
+                      className="cinema-input w-full px-3 py-2 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-zinc-400 mb-1">密码（可选）</label>
+                    <input
+                      type="password"
+                      value={settings.openSubtitlesPassword || ''}
+                      onChange={(e) =>
+                        setSettings({ ...settings, openSubtitlesPassword: e.target.value })
+                      }
+                      placeholder="可选"
+                      className="cinema-input w-full px-3 py-2 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="cinema-surface rounded-3xl p-6 space-y-4">

@@ -23,6 +23,11 @@ const updateSettingsSchema = z.object({
   telegramBotToken: z.string().max(200).optional(),
   telegramChatId: z.string().max(100).optional(),
   webhookUrl: z.string().max(500).optional(),
+  assrtToken: z.string().max(200).optional(),
+  subdlApiKey: z.string().max(200).optional(),
+  openSubtitlesApiKey: z.string().max(200).optional(),
+  openSubtitlesUsername: z.string().max(128).optional(),
+  openSubtitlesPassword: z.string().max(200).optional(),
 });
 
 const runCleanupSchema = z.object({

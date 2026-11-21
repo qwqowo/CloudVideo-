@@ -467,6 +467,28 @@ export async function extractSubtitleToCleanVtt(
   return sanitizeAndDeduplicateWebVtt(stdout);
 }
 
+export function decodeSubtitleBufferToUtf8(buffer: Buffer): string {
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.subarray(3).toString('utf8');
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(buffer.subarray(2));
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return new TextDecoder('utf-16be').decode(buffer.subarray(2));
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    try {
+      // GB18030 is a superset of GBK & GB2312 (common for Chinese subtitles on Assrt/Shooter)
+      return new TextDecoder('gb18030').decode(buffer);
+    } catch {
+      return buffer.toString('utf8');
+    }
+  }
+}
+
 export async function convertSubtitleBufferToVtt(
   buffer: Buffer,
   originalName: string,
@@ -474,15 +496,16 @@ export async function convertSubtitleBufferToVtt(
 ): Promise<void> {
   await fs.mkdir(path.dirname(outputVttPath), { recursive: true });
   const ext = path.extname(originalName).toLowerCase();
+  const decodedText = decodeSubtitleBufferToUtf8(buffer);
 
   if (ext === '.vtt') {
-    const clean = sanitizeAndDeduplicateWebVtt(buffer.toString('utf8'));
+    const clean = sanitizeAndDeduplicateWebVtt(decodedText);
     await fs.writeFile(outputVttPath, clean, 'utf8');
     return;
   }
 
   const tmpIn = `${outputVttPath}.src${ext || '.srt'}`;
-  await fs.writeFile(tmpIn, buffer);
+  await fs.writeFile(tmpIn, decodedText, 'utf8');
   try {
     const { stdout } = await execFileAsync(
       'ffmpeg',

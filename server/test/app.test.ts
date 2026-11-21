@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { buildApp, type AppContext } from '../src/app.js';
@@ -16,7 +17,12 @@ import type {
   QBitTorrent,
   QBitTransferInfo,
 } from '../src/services/qbittorrent.js';
-import { resolveSafePath, sanitizeAndDeduplicateWebVtt } from '../src/services/media.js';
+import {
+  decodeSubtitleBufferToUtf8,
+  resolveSafePath,
+  sanitizeAndDeduplicateWebVtt,
+} from '../src/services/media.js';
+import { extractZipEntries } from '../src/services/subtitles.js';
 import { LoginRateLimiter, signStreamToken, verifyStreamToken } from '../src/auth.js';
 
 const execFileAsync = promisify(execFile);
@@ -1148,6 +1154,317 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
       else process.env.TMDB_API_BASE = prevBase;
       await appCtx2.close();
       await new Promise<void>((resolve) => tmdbMock.close(() => resolve()));
+    }
+  });
+
+  it('aggregates online subtitles (Shooter + Assrt + SubDL + OpenSubtitles), extracts ZIP, decodes GB18030, and mounts WebVTT', async () => {
+    // Verify GB18030 decoding directly ("中文" in GB18030 = d6 d0 ce c4)
+    const gbBytes = Buffer.from([0xd6, 0xd0, 0xce, 0xc4]);
+    assert.equal(decodeSubtitleBufferToUtf8(gbBytes), '中文');
+
+    // Minimal valid Deflate ZIP builder for testing pure-Node ZIP subtitle extraction
+    const buildZip = (files: Array<{ name: string; content: Buffer }>): Buffer => {
+      const localParts: Buffer[] = [];
+      const cdParts: Buffer[] = [];
+      let offset = 0;
+
+      for (const f of files) {
+        const nameBuf = Buffer.from(f.name, 'utf8');
+        const deflated = zlib.deflateRawSync(f.content);
+        const lfh = Buffer.alloc(30);
+        lfh.writeUInt32LE(0x04034b50, 0);
+        lfh.writeUInt16LE(20, 4);
+        lfh.writeUInt16LE(0, 6);
+        lfh.writeUInt16LE(8, 8); // deflate
+        lfh.writeUInt32LE(0, 14); // crc ignored by reader
+        lfh.writeUInt32LE(deflated.length, 18);
+        lfh.writeUInt32LE(f.content.length, 22);
+        lfh.writeUInt16LE(nameBuf.length, 26);
+        lfh.writeUInt16LE(0, 28);
+        localParts.push(lfh, nameBuf, deflated);
+
+        const cdh = Buffer.alloc(46);
+        cdh.writeUInt32LE(0x02014b50, 0);
+        cdh.writeUInt16LE(20, 4);
+        cdh.writeUInt16LE(20, 6);
+        cdh.writeUInt16LE(0, 8);
+        cdh.writeUInt16LE(8, 10);
+        cdh.writeUInt32LE(0, 16);
+        cdh.writeUInt32LE(deflated.length, 20);
+        cdh.writeUInt32LE(f.content.length, 24);
+        cdh.writeUInt16LE(nameBuf.length, 28);
+        cdh.writeUInt16LE(0, 30);
+        cdh.writeUInt16LE(0, 32);
+        cdh.writeUInt32LE(offset, 42);
+        cdParts.push(cdh, nameBuf);
+
+        offset += lfh.length + nameBuf.length + deflated.length;
+      }
+
+      const cdBuf = Buffer.concat(cdParts);
+      const eocd = Buffer.alloc(22);
+      eocd.writeUInt32LE(0x06054b50, 0);
+      eocd.writeUInt16LE(files.length, 8);
+      eocd.writeUInt16LE(files.length, 10);
+      eocd.writeUInt32LE(cdBuf.length, 12);
+      eocd.writeUInt32LE(offset, 16);
+      return Buffer.concat([...localParts, cdBuf, eocd]);
+    };
+
+    // Build a ZIP containing an English SRT and a GB18030 Chinese SRT -> service must pick Chinese!
+    const gbChsSrt = Buffer.concat([
+      Buffer.from('1\r\n00:00:01,000 --> 00:00:03,500\r\n', 'ascii'),
+      gbBytes, // "中文" in GB18030
+      Buffer.from(' SubDL\r\n', 'ascii'),
+    ]);
+    const engSrt = Buffer.from('1\r\n00:00:01,000 --> 00:00:03,500\r\nEnglish Only\r\n', 'utf8');
+    const subdlZip = buildZip([
+      { name: 'Show.S01E01.eng.srt', content: engSrt },
+      { name: 'Show.S01E01.chs.srt', content: gbChsSrt },
+    ]);
+    assert.equal(extractZipEntries(subdlZip).length, 2);
+
+    const subMock = http.createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+      const base = `http://127.0.0.1:${(subMock.address() as any).port}`;
+
+      if (url.pathname === '/shooter' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify([
+            {
+              Desc: '射手哈希精准匹配中字',
+              Files: [{ Ext: 'srt', Link: `${base}/files/shooter.srt` }],
+            },
+          ])
+        );
+        return;
+      }
+
+      if (url.pathname === '/assrt/sub/search') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            status: 0,
+            sub: {
+              subs: [
+                {
+                  id: 5001,
+                  native_name: '出租车司机.双语特效字幕',
+                  subtype: 'ASS',
+                  lang: { desc: '简英双语' },
+                  download_count: 980,
+                },
+              ],
+            },
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/assrt/sub/detail') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            status: 0,
+            sub: {
+              subs: [
+                {
+                  id: 5001,
+                  filename: 'taxi.srt',
+                  filelist: [{ f: 'taxi.chs.srt', url: `${base}/files/assrt.srt` }],
+                },
+              ],
+            },
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/subdl/subtitles') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            status: true,
+            subtitles: [
+              {
+                sub_id: 9001,
+                release_name: 'Show.S01E01.1080p.WEB-DL.ZH',
+                language: 'Chinese',
+                url: '/dl/pack.zip',
+              },
+            ],
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/dl/pack.zip') {
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': 'attachment; filename="pack.zip"',
+        });
+        res.end(subdlZip);
+        return;
+      }
+
+      if (url.pathname === '/os/subtitles') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            data: [
+              {
+                id: 'os-1',
+                attributes: {
+                  language: 'zh-cn',
+                  release: 'Show.S01E01.OpenSub',
+                  download_count: 320,
+                  files: [{ file_id: 777123, file_name: 'show.zh.srt' }],
+                },
+              },
+            ],
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/files/assrt.srt') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('1\r\n00:00:02,000 --> 00:00:05,000\r\n伪射手双语字幕测试\r\n');
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not Found');
+    });
+
+    await new Promise<void>((resolve) => subMock.listen(0, '127.0.0.1', resolve));
+    const port = (subMock.address() as any).port;
+    const mockBase = `http://127.0.0.1:${port}`;
+
+    const prevEnv = {
+      SHOOTER_API_URL: process.env.SHOOTER_API_URL,
+      ASSRT_API_BASE: process.env.ASSRT_API_BASE,
+      SUBDL_API_BASE: process.env.SUBDL_API_BASE,
+      SUBDL_DL_ORIGIN: process.env.SUBDL_DL_ORIGIN,
+      OPENSUBTITLES_API_BASE: process.env.OPENSUBTITLES_API_BASE,
+    };
+    process.env.SHOOTER_API_URL = `${mockBase}/shooter`;
+    process.env.ASSRT_API_BASE = `${mockBase}/assrt`;
+    process.env.SUBDL_API_BASE = `${mockBase}/subdl`;
+    process.env.SUBDL_DL_ORIGIN = mockBase;
+    process.env.OPENSUBTITLES_API_BASE = `${mockBase}/os`;
+
+    try {
+      // Configure all subtitle provider keys via settings API
+      const setRes = await ctx.app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        headers: { cookie: cookieHeader },
+        payload: {
+          assrtToken: 'mock-assrt-token',
+          subdlApiKey: 'mock-subdl-key',
+          openSubtitlesApiKey: 'mock-os-key',
+        },
+      });
+      assert.equal(setRes.statusCode, 200);
+      assert.equal(setRes.json().settings.assrtToken, 'mock-assrt-token');
+      assert.equal(setRes.json().settings.subdlApiKey, 'mock-subdl-key');
+
+      // Seed a >16KB mock media file so Shooter 4-chunk MD5 hash triggers
+      const subTestDir = path.join(downloadDir, 'sub-show');
+      await fs.mkdir(subTestDir, { recursive: true });
+      const epPath = path.join(subTestDir, 'Show.S01E01.1080p.mp4');
+      await fs.writeFile(epPath, Buffer.alloc(64 * 1024, 0x42));
+      const epHash = '6666666666666666666666666666666666666666';
+
+      qbit.seed(
+        {
+          hash: epHash,
+          name: 'Show S01E01',
+          size: 64 * 1024,
+          downloaded: 64 * 1024,
+          amount_left: 0,
+          progress: 1,
+          dlspeed: 0,
+          upspeed: 0,
+          state: 'pausedUP',
+          eta: 0,
+          added_on: Math.floor(Date.now() / 1000),
+          completion_on: Math.floor(Date.now() / 1000),
+          save_path: downloadDir,
+          content_path: subTestDir,
+          seq_dl: true,
+          f_l_piece_prio: true,
+          num_seeds: 1,
+          num_leechs: 0,
+          ratio: 0,
+        },
+        [{ index: 0, name: 'sub-show/Show.S01E01.1080p.mp4', size: 64 * 1024, progress: 1, priority: 1 }]
+      );
+
+      // 1) Multi-provider aggregated search returns all 4 providers
+      const searchRes = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/stream/${epHash}/0/subtitles/search?lang=zh`,
+        headers: { cookie: cookieHeader },
+      });
+      assert.equal(searchRes.statusCode, 200);
+      const searchBody = searchRes.json();
+      assert.equal(searchBody.results.length, 4);
+      const providers = searchBody.results.map((r: any) => r.provider);
+      assert.ok(providers.includes('shooter'));
+      assert.ok(providers.includes('assrt'));
+      assert.ok(providers.includes('subdl'));
+      assert.ok(providers.includes('opensubtitles'));
+
+      // 2) Mount SubDL ZIP -> extracts GB18030 Chinese SRT over English SRT & serves clean UTF-8 WebVTT
+      const subdlItem = searchBody.results.find((r: any) => r.provider === 'subdl');
+      const dlSubdl = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/stream/${epHash}/0/subtitles/download`,
+        headers: { cookie: cookieHeader },
+        payload: {
+          provider: subdlItem.provider,
+          providerId: subdlItem.providerId,
+          title: subdlItem.title,
+          downloadUrl: subdlItem.downloadUrl,
+          fileHint: subdlItem.fileHint,
+        },
+      });
+      assert.equal(dlSubdl.statusCode, 200);
+      const dlSubdlJson = dlSubdl.json();
+      assert.ok(dlSubdlJson.subtitle.id.startsWith('usr:'));
+      assert.ok(dlSubdlJson.subtitle.title.startsWith('[在线]'));
+
+      const vttSubdl = await ctx.app.inject({ method: 'GET', url: dlSubdlJson.subtitle.url });
+      assert.equal(vttSubdl.statusCode, 200);
+      assert.ok(vttSubdl.body.startsWith('WEBVTT'));
+      assert.ok(vttSubdl.body.includes('中文 SubDL'));
+      assert.ok(!vttSubdl.body.includes('English Only'));
+
+      // 3) Mount Assrt 2-step detail -> filelist direct file -> serves clean WebVTT
+      const assrtItem = searchBody.results.find((r: any) => r.provider === 'assrt');
+      const dlAssrt = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/stream/${epHash}/0/subtitles/download`,
+        headers: { cookie: cookieHeader },
+        payload: {
+          provider: assrtItem.provider,
+          providerId: assrtItem.providerId,
+          title: assrtItem.title,
+        },
+      });
+      assert.equal(dlAssrt.statusCode, 200);
+      const vttAssrt = await ctx.app.inject({ method: 'GET', url: dlAssrt.json().subtitle.url });
+      assert.equal(vttAssrt.statusCode, 200);
+      assert.ok(vttAssrt.body.includes('伪射手双语字幕测试'));
+    } finally {
+      for (const [k, v] of Object.entries(prevEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      await new Promise<void>((resolve) => subMock.close(() => resolve()));
     }
   });
 });
