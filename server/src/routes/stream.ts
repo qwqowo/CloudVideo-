@@ -14,14 +14,24 @@ import {
 } from '../auth.js';
 import {
   convertSubtitleBufferToVtt,
+  extractSubtitleToCleanVtt,
   extractVideoThumbnail,
   getMimeType,
   probeMedia,
   resolveSafePath,
+  sanitizeAndDeduplicateWebVtt,
 } from '../services/media.js';
 
 export const activeFfmpegProcesses = new Set<ChildProcess>();
 const inflightThumbs = new Map<string, Promise<boolean>>();
+const subtitleVttCache = new Map<string, string>();
+function cacheVtt(key: string, vtt: string): void {
+  if (subtitleVttCache.size >= 48) {
+    const oldest = subtitleVttCache.keys().next().value;
+    if (oldest) subtitleVttCache.delete(oldest);
+  }
+  subtitleVttCache.set(key, vtt);
+}
 
 export function killAllFfmpeg(): void {
   for (const proc of activeFfmpegProcesses) {
@@ -438,7 +448,8 @@ export async function registerStreamRoutes(
       }
       const exists = await fsp.stat(sub.filePath).catch(() => null);
       if (!exists) return reply.code(404).send({ error: 'SubtitleNotFound' });
-      return reply.send(fs.createReadStream(sub.filePath));
+      const raw = await fsp.readFile(sub.filePath, 'utf8');
+      return reply.send(sanitizeAndDeduplicateWebVtt(raw));
     }
 
     const target = await resolveFile(hash, idx);
@@ -453,51 +464,37 @@ export async function registerStreamRoutes(
     }
 
     if (track.source === 'external' && track.externalPath) {
-      if (path.extname(track.externalPath).toLowerCase() === '.vtt') {
-        return reply.send(fs.createReadStream(track.externalPath));
+      const st = await fsp.stat(track.externalPath).catch(() => null);
+      const cacheKey = `ext:${track.externalPath}:${st?.mtimeMs || 0}:${st?.size || 0}`;
+      const cached = subtitleVttCache.get(cacheKey);
+      if (cached) return reply.send(cached);
+      try {
+        const cleanVtt = await extractSubtitleToCleanVtt(track.externalPath);
+        cacheVtt(cacheKey, cleanVtt);
+        return reply.send(cleanVtt);
+      } catch (err) {
+        return reply.code(500).send({
+          error: 'SubtitleConvertError',
+          message: err instanceof Error ? err.message : '外挂字幕解析失败',
+        });
       }
-      const ffmpeg = spawn(
-        'ffmpeg',
-        ['-hide_banner', '-loglevel', 'error', '-i', track.externalPath, '-f', 'webvtt', 'pipe:1'],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
-      );
-      activeFfmpegProcesses.add(ffmpeg);
-      const stop = () => {
-        activeFfmpegProcesses.delete(ffmpeg);
-        if (!ffmpeg.killed) ffmpeg.kill('SIGKILL');
-      };
-      req.raw.on('close', stop);
-      ffmpeg.on('exit', () => activeFfmpegProcesses.delete(ffmpeg));
-      ffmpeg.stderr?.resume();
-      return reply.send(ffmpeg.stdout);
     }
 
     if (track.source === 'embedded' && track.streamIndex !== undefined) {
-      const ffmpeg = spawn(
-        'ffmpeg',
-        [
-          '-hide_banner',
-          '-loglevel',
-          'error',
-          '-i',
-          target.absPath,
-          '-map',
-          `0:${track.streamIndex}`,
-          '-f',
-          'webvtt',
-          'pipe:1',
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
-      );
-      activeFfmpegProcesses.add(ffmpeg);
-      const stop = () => {
-        activeFfmpegProcesses.delete(ffmpeg);
-        if (!ffmpeg.killed) ffmpeg.kill('SIGKILL');
-      };
-      req.raw.on('close', stop);
-      ffmpeg.on('exit', () => activeFfmpegProcesses.delete(ffmpeg));
-      ffmpeg.stderr?.resume();
-      return reply.send(ffmpeg.stdout);
+      const st = await fsp.stat(target.absPath).catch(() => null);
+      const cacheKey = `emb:${target.absPath}:${track.streamIndex}:${st?.mtimeMs || 0}:${st?.size || 0}`;
+      const cached = subtitleVttCache.get(cacheKey);
+      if (cached) return reply.send(cached);
+      try {
+        const cleanVtt = await extractSubtitleToCleanVtt(target.absPath, track.streamIndex);
+        cacheVtt(cacheKey, cleanVtt);
+        return reply.send(cleanVtt);
+      } catch (err) {
+        return reply.code(500).send({
+          error: 'SubtitleExtractError',
+          message: err instanceof Error ? err.message : '内封字幕提取失败',
+        });
+      }
     }
 
     return reply.code(404).send({ error: 'SubtitleNotFound' });

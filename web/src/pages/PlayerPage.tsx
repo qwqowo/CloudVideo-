@@ -15,6 +15,9 @@ import {
   SkipForward,
   Keyboard,
   Activity,
+  Maximize2,
+  Minimize2,
+  SlidersHorizontal,
 } from 'lucide-react';
 import type { DownloadLiveStatus, ProbeResponse, SubtitleTrack, TorrentFileItem } from '../types';
 import {
@@ -33,6 +36,106 @@ interface PlayerPageProps {
   onBack: () => void;
   onSelectEpisode: (fileIndex: number) => void;
   onDataChanged: () => void;
+}
+
+interface ParsedVttCue {
+  start: number;
+  end: number;
+  lines: string[];
+  alignTop: boolean;
+}
+
+type SubSize = 'sm' | 'md' | 'lg' | 'xl';
+type SubTheme = 'stroke' | 'frosted' | 'amber';
+type SubPos = 'low' | 'mid' | 'high';
+
+interface SubStylePrefs {
+  size: SubSize;
+  theme: SubTheme;
+  pos: SubPos;
+  zhOnly: boolean;
+}
+
+const SUB_STYLE_STORAGE_KEY = 'cloudvideo_sub_style_v1';
+
+const DEFAULT_SUB_STYLE: SubStylePrefs = {
+  size: 'md',
+  theme: 'stroke',
+  pos: 'mid',
+  zhOnly: false,
+};
+
+function loadSubStylePrefs(): SubStylePrefs {
+  try {
+    const raw = localStorage.getItem(SUB_STYLE_STORAGE_KEY);
+    if (!raw) return DEFAULT_SUB_STYLE;
+    const p = JSON.parse(raw) as Partial<SubStylePrefs>;
+    return {
+      size: p.size === 'sm' || p.size === 'md' || p.size === 'lg' || p.size === 'xl' ? p.size : 'md',
+      theme: p.theme === 'stroke' || p.theme === 'frosted' || p.theme === 'amber' ? p.theme : 'stroke',
+      pos: p.pos === 'low' || p.pos === 'mid' || p.pos === 'high' ? p.pos : 'mid',
+      zhOnly: Boolean(p.zhOnly),
+    };
+  } catch {
+    return DEFAULT_SUB_STYLE;
+  }
+}
+
+function parseVttTimeSec(ts: string): number {
+  const parts = ts.trim().replace(',', '.').split(':');
+  const sec = Number(parts.pop() || '0');
+  const min = Number(parts.pop() || '0');
+  const hr = parts.length > 0 ? Number(parts.pop() || '0') : 0;
+  return Number.isFinite(sec + min + hr) ? hr * 3600 + min * 60 + sec : 0;
+}
+
+function parseWebVttCues(vtt: string): ParsedVttCue[] {
+  const normalized = vtt.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const blocks = normalized.split(/\n{2,}/);
+  const cues: ParsedVttCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const timeIdx = lines.findIndex((l) => l.includes('-->'));
+    if (timeIdx === -1) continue;
+    const m = lines[timeIdx]
+      .trim()
+      .match(
+        /^(\d{1,2}:\d{2}:\d{2}[.,]\d{3}|\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3}|\d{2}:\d{2}[.,]\d{3})(.*)$/
+      );
+    if (!m) continue;
+    const start = parseVttTimeSec(m[1]);
+    const end = parseVttTimeSec(m[2]);
+    if (end <= start) continue;
+
+    const settings = m[3] || '';
+    const alignTop = /\bline:\s*(?:[0-9]|1[0-9]|20)%/i.test(settings);
+    const textLines = lines
+      .slice(timeIdx + 1)
+      .map((l) =>
+        l
+          .replace(/\{[^}]*\}/g, '')
+          .replace(/<\/?[^>]+>/g, '')
+          .trim()
+      )
+      .filter(Boolean);
+
+    if (textLines.length === 0) continue;
+    cues.push({ start, end, lines: textLines, alignTop });
+  }
+  return cues;
+}
+
+function isJapaneseOrLatinLine(line: string): boolean {
+  // Japanese Kana present -> Japanese line
+  if (/[\u3040-\u30ff]/.test(line)) return true;
+  // Pure Latin/punctuation without CJK -> English/Romanized line
+  if (/[a-zA-Z]{2,}/.test(line) && !/[\u4e00-\u9fff]/.test(line)) return true;
+  return false;
+}
+
+function isChinesePrimaryLine(line: string): boolean {
+  return /[\u4e00-\u9fff]/.test(line) && !/[\u3040-\u30ff]/.test(line);
 }
 
 function shiftVttTimestamps(vtt: string, offsetSec: number): string {
@@ -68,6 +171,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   onSelectEpisode,
   onDataChanged,
 }) => {
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const subInputRef = useRef<HTMLInputElement | null>(null);
   const [probeData, setProbeData] = useState<ProbeResponse | null>(null);
@@ -82,6 +186,11 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   const [selectedSubId, setSelectedSubId] = useState<string>('');
   const [subOffsetSec, setSubOffsetSec] = useState(0);
   const [subBlobUrl, setSubBlobUrl] = useState<string>('');
+  const [parsedCues, setParsedCues] = useState<ParsedVttCue[]>([]);
+  const [subStyle, setSubStyle] = useState<SubStylePrefs>(loadSubStylePrefs);
+  const [showSubStylePanel, setShowSubStylePanel] = useState(false);
+  const [stageFullscreen, setStageFullscreen] = useState(false);
+  const [nativeVideoFullscreen, setNativeVideoFullscreen] = useState(false);
   const [uploadingSub, setUploadingSub] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [remuxOffset, setRemuxOffset] = useState(0);
@@ -331,16 +440,58 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     [probeData, selectedSubId]
   );
 
+  const updateSubStyle = useCallback((patch: Partial<SubStylePrefs>) => {
+    setSubStyle((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        localStorage.setItem(SUB_STYLE_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage quota
+      }
+      return next;
+    });
+  }, []);
+
+  // Track stage fullscreen vs native <video> fullscreen so subtitles never duplicate
+  useEffect(() => {
+    const syncFs = () => {
+      const fsEl = document.fullscreenElement;
+      setStageFullscreen(Boolean(fsEl && fsEl === stageRef.current));
+      setNativeVideoFullscreen(Boolean(fsEl && fsEl === videoRef.current));
+    };
+    document.addEventListener('fullscreenchange', syncFs);
+    return () => document.removeEventListener('fullscreenchange', syncFs);
+  }, []);
+
+  // Keep native <track> hidden while Custom Cinema Overlay is active; show in native <video> fullscreen
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !v.textTracks) return;
+    for (let i = 0; i < v.textTracks.length; i++) {
+      v.textTracks[i].mode = nativeVideoFullscreen ? 'showing' : 'hidden';
+    }
+  }, [nativeVideoFullscreen, subBlobUrl, mode, audioTrack, remuxOffset]);
+
+  // Higher-precision subtitle clock (100ms) while video plays for crisp anime dialogue timing
+  useEffect(() => {
+    if (parsedCues.length === 0) return;
+    const id = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.paused) return;
+      const t = mode === 'remux' ? remuxOffset + v.currentTime : v.currentTime;
+      setCurrentTime(t);
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [parsedCues.length, mode, remuxOffset]);
+
+  // Fetch & parse active subtitle into clean cues (+ keep shifted blob URL for native fullscreen fallback)
   useEffect(() => {
     let revokedUrl = '';
     let cancelled = false;
 
     if (!activeSub) {
       setSubBlobUrl('');
-      return;
-    }
-    if (subOffsetSec === 0) {
-      setSubBlobUrl(activeSub.url);
+      setParsedCues([]);
       return;
     }
 
@@ -349,12 +500,23 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
         const res = await fetch(activeSub.url, { credentials: 'include' });
         if (!res.ok || cancelled) return;
         const rawVtt = await res.text();
-        const shifted = shiftVttTimestamps(rawVtt, subOffsetSec);
-        const blob = new Blob([shifted], { type: 'text/vtt' });
-        revokedUrl = URL.createObjectURL(blob);
-        if (!cancelled) setSubBlobUrl(revokedUrl);
+        if (cancelled) return;
+
+        setParsedCues(parseWebVttCues(rawVtt));
+
+        if (subOffsetSec === 0) {
+          setSubBlobUrl(activeSub.url);
+        } else {
+          const shifted = shiftVttTimestamps(rawVtt, subOffsetSec);
+          const blob = new Blob([shifted], { type: 'text/vtt' });
+          revokedUrl = URL.createObjectURL(blob);
+          setSubBlobUrl(revokedUrl);
+        }
       } catch {
-        if (!cancelled) setSubBlobUrl(activeSub.url);
+        if (!cancelled) {
+          setSubBlobUrl(activeSub.url);
+          setParsedCues([]);
+        }
       }
     })();
 
@@ -363,6 +525,36 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
   }, [activeSub, subOffsetSec]);
+
+  const toggleStageFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else if (stageRef.current?.requestFullscreen) {
+      void stageRef.current.requestFullscreen();
+    } else {
+      void videoRef.current?.requestFullscreen?.();
+    }
+  }, []);
+
+  const activeSubtitleCues = useMemo(() => {
+    if (!activeSub || parsedCues.length === 0 || nativeVideoFullscreen) return [];
+    // Offset: +0.5s means subtitles show 0.5s later -> lookup at currentTime - offset
+    const t = currentTime - subOffsetSec;
+    const matched = parsedCues.filter((c) => t >= c.start && t <= c.end);
+    if (matched.length <= 1) return matched;
+
+    // Runtime final deduplication safety net across overlapping cues
+    const seen = new Set<string>();
+    const unique: ParsedVttCue[] = [];
+    for (const c of matched) {
+      const k = `${c.alignTop ? 'T' : 'B'}:${c.lines.join('\n').replace(/\s+/g, '').toLowerCase()}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        unique.push(c);
+      }
+    }
+    return unique;
+  }, [activeSub, parsedCues, currentTime, subOffsetSec, nativeVideoFullscreen]);
 
   const nextEpisode = useMemo(() => {
     const curPos = episodes.findIndex((e) => e.index === fileIndex);
@@ -405,8 +597,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       } else if (e.key.toLowerCase() === 'm') {
         v.muted = !v.muted;
       } else if (e.key.toLowerCase() === 'f') {
-        if (document.fullscreenElement) void document.exitFullscreen();
-        else void v.requestFullscreen?.();
+        toggleStageFullscreen();
       } else if (e.key === ']') {
         const idx = SPEEDS.indexOf(playbackRate);
         const next = SPEEDS[Math.min(SPEEDS.length - 1, (idx === -1 ? 1 : idx) + 1)];
@@ -635,6 +826,18 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
             {mode === 'direct' ? '原生直出' : '无损 Remux'}
           </span>
           <button
+            onClick={toggleStageFullscreen}
+            title="支持高级字幕与手势的影院全屏 (快捷键 F)"
+            className="btn-ghost px-3 py-1.5 text-xs"
+          >
+            {stageFullscreen ? (
+              <Minimize2 className="w-3.5 h-3.5" />
+            ) : (
+              <Maximize2 className="w-3.5 h-3.5" />
+            )}
+            {stageFullscreen ? '退出全屏' : '影院全屏'}
+          </button>
+          <button
             onClick={() => setShowShortcuts((s) => !s)}
             className="btn-ghost px-3 py-1.5 text-xs"
           >
@@ -695,7 +898,12 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           {/* Cinema Stage */}
           <div className={episodes.length > 1 ? 'xl:col-span-3 space-y-4' : 'xl:col-span-4 space-y-4'}>
             <div
-              className="rounded-3xl overflow-hidden bg-black border border-white/[0.08] shadow-[0_28px_70px_-20px_rgba(0,0,0,0.95)] relative"
+              ref={stageRef}
+              className={`overflow-hidden bg-black relative ${
+                stageFullscreen
+                  ? 'w-screen h-screen flex flex-col justify-center'
+                  : 'rounded-3xl border border-white/[0.08] shadow-[0_28px_70px_-20px_rgba(0,0,0,0.95)]'
+              }`}
               onTouchStart={handleVideoTouchStart}
               onTouchMove={handleVideoTouchMove}
               onTouchEnd={handleVideoTouchEnd}
@@ -733,7 +941,11 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 onError={() => {
                   if (mode === 'direct') setDirectPlaybackError(true);
                 }}
-                className="w-full aspect-video bg-black"
+                className={
+                  stageFullscreen
+                    ? 'w-full h-full object-contain bg-black'
+                    : 'w-full aspect-video bg-black'
+                }
               >
                 {activeSub && subBlobUrl && (
                   <track
@@ -741,10 +953,109 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                     kind="subtitles"
                     src={subBlobUrl}
                     label={activeSub.title}
-                    default
+                    default={nativeVideoFullscreen}
                   />
                 )}
               </video>
+
+              {/* Cinema-Grade Custom Subtitle Overlay (Top & Bottom Lanes, Bilingual Typography) */}
+              {activeSubtitleCues.length > 0 && (() => {
+                const topCues = activeSubtitleCues.filter((c) => c.alignTop);
+                const bottomCues = activeSubtitleCues.filter((c) => !c.alignTop);
+                const primarySizeClass = stageFullscreen
+                  ? {
+                      sm: 'text-xl sm:text-2xl',
+                      md: 'text-2xl sm:text-3xl',
+                      lg: 'text-3xl sm:text-4xl',
+                      xl: 'text-4xl sm:text-5xl',
+                    }[subStyle.size]
+                  : {
+                      sm: 'text-sm sm:text-base',
+                      md: 'text-base sm:text-xl',
+                      lg: 'text-lg sm:text-2xl',
+                      xl: 'text-xl sm:text-3xl',
+                    }[subStyle.size];
+
+                const secondarySizeClass = stageFullscreen
+                  ? {
+                      sm: 'text-base sm:text-lg',
+                      md: 'text-lg sm:text-2xl',
+                      lg: 'text-xl sm:text-3xl',
+                      xl: 'text-2xl sm:text-4xl',
+                    }[subStyle.size]
+                  : {
+                      sm: 'text-xs sm:text-sm',
+                      md: 'text-xs sm:text-base',
+                      lg: 'text-sm sm:text-lg',
+                      xl: 'text-base sm:text-xl',
+                    }[subStyle.size];
+
+                const bottomOffsetClass =
+                  subStyle.pos === 'low'
+                    ? 'bottom-12 sm:bottom-14'
+                    : subStyle.pos === 'high'
+                      ? 'bottom-20 sm:bottom-24'
+                      : 'bottom-14 sm:bottom-16';
+
+                const primaryColor =
+                  subStyle.theme === 'amber' ? 'text-amber-200' : 'text-white';
+                const secondaryColor =
+                  subStyle.theme === 'amber' ? 'text-amber-100/80' : 'text-zinc-100/85';
+
+                const renderCueGroup = (cues: ParsedVttCue[]) => {
+                  const allLines = cues.flatMap((c) => c.lines);
+                  const hasZh = allLines.some(isChinesePrimaryLine);
+                  const hasForeign = allLines.some(isJapaneseOrLatinLine);
+                  const isBilingual = hasZh && hasForeign;
+                  const visibleLines =
+                    isBilingual && subStyle.zhOnly
+                      ? allLines.filter((l) => !isJapaneseOrLatinLine(l))
+                      : allLines;
+
+                  return (
+                    <div
+                      className={`inline-flex flex-col items-center gap-0.5 max-w-[92%] text-center leading-snug tracking-wide ${
+                        subStyle.theme === 'frosted'
+                          ? 'px-4 py-1.5 rounded-2xl bg-black/55 backdrop-blur-md shadow-lg'
+                          : 'cinema-sub-stroke'
+                      }`}
+                    >
+                      {visibleLines.map((line, i) => {
+                        const isSecondary = isBilingual && isJapaneseOrLatinLine(line);
+                        return (
+                          <div
+                            key={`${i}-${line}`}
+                            className={
+                              isSecondary
+                                ? `${secondarySizeClass} ${secondaryColor} font-normal`
+                                : `${primarySizeClass} ${primaryColor} font-semibold`
+                            }
+                          >
+                            {line}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                };
+
+                return (
+                  <>
+                    {topCues.length > 0 && (
+                      <div className="pointer-events-none absolute top-4 inset-x-4 z-20 flex justify-center">
+                        {renderCueGroup(topCues)}
+                      </div>
+                    )}
+                    {bottomCues.length > 0 && (
+                      <div
+                        className={`pointer-events-none absolute ${bottomOffsetClass} inset-x-4 z-20 flex justify-center transition-all`}
+                      >
+                        {renderCueGroup(bottomCues)}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               {/* Floating Next-Episode Card */}
               {showNextPrompt && nextEpisode?.existsOnDisk && (
@@ -972,15 +1283,29 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       <Subtitles className="w-3.5 h-3.5" />
                       字幕
                     </span>
-                    <button
-                      type="button"
-                      disabled={uploadingSub}
-                      onClick={() => subInputRef.current?.click()}
-                      className="text-zinc-200 hover:text-white inline-flex items-center gap-1"
-                    >
-                      <Upload className="w-3 h-3" />
-                      {uploadingSub ? '转换中' : '上传字幕'}
-                    </button>
+                    <div className="flex items-center gap-2.5">
+                      {selectedSubId && (
+                        <button
+                          type="button"
+                          onClick={() => setShowSubStylePanel((v) => !v)}
+                          className={`inline-flex items-center gap-1 transition ${
+                            showSubStylePanel ? 'text-white' : 'text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          <SlidersHorizontal className="w-3 h-3" />
+                          样式
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={uploadingSub}
+                        onClick={() => subInputRef.current?.click()}
+                        className="text-zinc-200 hover:text-white inline-flex items-center gap-1"
+                      >
+                        <Upload className="w-3 h-3" />
+                        {uploadingSub ? '转换中' : '上传'}
+                      </button>
+                    </div>
                     <input
                       ref={subInputRef}
                       type="file"
@@ -1038,6 +1363,96 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Cinema Subtitle Appearance Studio */}
+              {selectedSubId && showSubStylePanel && (
+                <div className="rounded-2xl bg-white/[0.03] border border-white/[0.08] p-4 flex flex-wrap items-center justify-between gap-4 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-400">风格</span>
+                    {(
+                      [
+                        ['stroke', '影院描边'],
+                        ['frosted', '柔雾半透'],
+                        ['amber', '经典暖黄'],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => updateSubStyle({ theme: id })}
+                        className={`px-3 py-1 rounded-full transition ${
+                          subStyle.theme === id
+                            ? 'bg-white text-zinc-950 font-medium'
+                            : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-zinc-400 mr-0.5">字号</span>
+                    {(
+                      [
+                        ['sm', '小'],
+                        ['md', '标准'],
+                        ['lg', '大'],
+                        ['xl', '特大'],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => updateSubStyle({ size: id })}
+                        className={`px-2.5 py-1 rounded-full transition ${
+                          subStyle.size === id
+                            ? 'bg-white text-zinc-950 font-medium'
+                            : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-zinc-400 mr-0.5">高度</span>
+                    {(
+                      [
+                        ['low', '偏低'],
+                        ['mid', '标准'],
+                        ['high', '偏高'],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => updateSubStyle({ pos: id })}
+                        className={`px-2.5 py-1 rounded-full transition ${
+                          subStyle.pos === id
+                            ? 'bg-white text-zinc-950 font-medium'
+                            : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => updateSubStyle({ zhOnly: !subStyle.zhOnly })}
+                    className={`px-3 py-1 rounded-full border transition ${
+                      subStyle.zhOnly
+                        ? 'bg-amber-400/20 border-amber-400/40 text-amber-200'
+                        : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:text-white'
+                    }`}
+                  >
+                    双语时仅看中文：{subStyle.zhOnly ? '开' : '关'}
+                  </button>
+                </div>
+              )}
 
               {/* External Players */}
               <div className="pt-5 border-t border-white/[0.07] space-y-2.5">

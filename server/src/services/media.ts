@@ -287,6 +287,186 @@ export async function extractVideoThumbnail(
   return false;
 }
 
+interface VttCue {
+  startMs: number;
+  endMs: number;
+  settings: string;
+  lines: string[];
+  normKey: string;
+}
+
+function parseVttTimestampMs(ts: string): number {
+  const clean = ts.trim().replace(',', '.');
+  const parts = clean.split(':');
+  if (parts.length < 2 || parts.length > 3) return -1;
+  const sec = parseFloat(parts.pop() || '0');
+  const min = parseInt(parts.pop() || '0', 10);
+  const hr = parts.length > 0 ? parseInt(parts.pop() || '0', 10) : 0;
+  if (!Number.isFinite(sec) || !Number.isFinite(min) || !Number.isFinite(hr)) return -1;
+  return Math.max(0, Math.round((hr * 3600 + min * 60 + sec) * 1000));
+}
+
+function formatVttTimestampMs(ms: number): string {
+  const clamped = Math.max(0, Math.round(ms));
+  const h = Math.floor(clamped / 3_600_000);
+  const m = Math.floor((clamped % 3_600_000) / 60_000);
+  const s = Math.floor((clamped % 60_000) / 1000);
+  const rem = clamped % 1000;
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const pad3 = (n: number) => String(n).padStart(3, '0');
+  return `${pad2(h)}:${pad2(m)}:${pad2(s)}.${pad3(rem)}`;
+}
+
+function isAssVectorDrawingLine(line: string): boolean {
+  return /^m\s+-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?(?:\s+[lbspc]\s+(?:-?\d+(?:\.\d+)?\s*)+)+$/i.test(
+    line.trim()
+  );
+}
+
+function cleanCueText(rawText: string): { lines: string[]; alignTop: boolean } {
+  // Detect ASS top alignment tags before stripping override blocks
+  const alignTop = /\{[^}]*\\an[789][^}]*\}/i.test(rawText);
+
+  let text = rawText
+    // Remove ASS vector drawing blocks {\p1}...{\p0}
+    .replace(/\{[^}]*\\p[1-9][^}]*\}[\s\S]*?(?:\{[^}]*\\p0[^}]*\}|$)/gi, '')
+    // Strip ALL remaining ASS override blocks including empty {}
+    .replace(/\{[^}]*\}/g, '')
+    // Replace ASS escape sequences
+    .replace(/\\N|\\n/g, '\n')
+    .replace(/\\h/g, ' ')
+    // Strip HTML/VTT style wrapper tags that interfere with clean typography
+    .replace(/<\/?(?:font|c|b|i|u|ruby|rt|span)[^>]*>/gi, '')
+    // Decode common HTML entities
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'");
+
+  const rawLines = text
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l.length > 0 && !isAssVectorDrawingLine(l));
+
+  // Deduplicate identical lines inside the same cue
+  const dedupLines: string[] = [];
+  const seen = new Set<string>();
+  for (const line of rawLines) {
+    const key = line.replace(/\s+/g, '').toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      dedupLines.push(line);
+    }
+  }
+
+  return { lines: dedupLines, alignTop };
+}
+
+/**
+ * Cleans ASS/SRT-to-WebVTT conversion artifacts:
+ * - Strips empty `{}` and stray ASS override tags / vector drawings
+ * - Collapses layered anime shadow/glow/border duplicate cues at overlapping timestamps
+ * - Merges contiguous frame-by-frame animation spam cues with identical text
+ * - Preserves top-aligned signs/notes (`{\an7|8|9}`) cleanly at `line:6%`
+ */
+export function sanitizeAndDeduplicateWebVtt(rawVtt: string): string {
+  const normalized = rawVtt.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const blocks = normalized.split(/\n{2,}/);
+  const parsedCues: VttCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const timeIdx = lines.findIndex((l) => l.includes('-->'));
+    if (timeIdx === -1) continue;
+
+    const timeLine = lines[timeIdx].trim();
+    const timeMatch = timeLine.match(
+      /^(\d{1,2}:\d{2}:\d{2}[.,]\d{3}|\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3}|\d{2}:\d{2}[.,]\d{3})(.*)$/
+    );
+    if (!timeMatch) continue;
+
+    const startMs = parseVttTimestampMs(timeMatch[1]);
+    const endMs = parseVttTimestampMs(timeMatch[2]);
+    if (startMs < 0 || endMs <= startMs) continue;
+
+    const rawSettings = (timeMatch[3] || '').trim();
+    const payload = lines.slice(timeIdx + 1).join('\n');
+    const { lines: cleanLines, alignTop } = cleanCueText(payload);
+    if (cleanLines.length === 0) continue;
+
+    // Strip messy FFmpeg absolute pixel positions but preserve clean top alignment
+    let settings = '';
+    if (alignTop || /\bline:\s*(?:[0-9]|1[0-9]|20)%/i.test(rawSettings)) {
+      settings = 'line:6%';
+    }
+
+    const normKey = cleanLines.join('\n').replace(/\s+/g, '').toLowerCase();
+    parsedCues.push({ startMs, endMs, settings, lines: cleanLines, normKey });
+  }
+
+  // Sort chronologically
+  parsedCues.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+
+  // Deduplicate overlapping & contiguous identical cues (fixes 3x layered ASS effects & animation spam)
+  const merged: VttCue[] = [];
+  for (const cue of parsedCues) {
+    let matchedExisting = false;
+    for (let i = merged.length - 1; i >= 0; i--) {
+      const prev = merged[i];
+      if (cue.startMs > prev.endMs + 400) {
+        // Because cues are sorted by startMs, only stop if far enough back
+        if (cue.startMs - prev.startMs > 30_000) break;
+        continue;
+      }
+      if (prev.normKey === cue.normKey && cue.startMs <= prev.endMs + 350) {
+        prev.endMs = Math.max(prev.endMs, cue.endMs);
+        if (!prev.settings && cue.settings) prev.settings = cue.settings;
+        matchedExisting = true;
+        break;
+      }
+    }
+    if (!matchedExisting) {
+      merged.push({ ...cue });
+    }
+  }
+
+  const out: string[] = ['WEBVTT', ''];
+  for (const cue of merged) {
+    const header = `${formatVttTimestampMs(cue.startMs)} --> ${formatVttTimestampMs(cue.endMs)}${
+      cue.settings ? ` ${cue.settings}` : ''
+    }`;
+    out.push(header);
+    out.push(...cue.lines);
+    out.push('');
+  }
+  return out.join('\n');
+}
+
+export async function extractSubtitleToCleanVtt(
+  inputPath: string,
+  streamIndex?: number
+): Promise<string> {
+  const ext = path.extname(inputPath).toLowerCase();
+  if (streamIndex === undefined && ext === '.vtt') {
+    const raw = await fs.readFile(inputPath, 'utf8');
+    return sanitizeAndDeduplicateWebVtt(raw);
+  }
+
+  const args = ['-hide_banner', '-loglevel', 'error', '-i', inputPath];
+  if (streamIndex !== undefined) {
+    args.push('-map', `0:${streamIndex}`);
+  }
+  args.push('-f', 'webvtt', 'pipe:1');
+
+  const { stdout } = await execFileAsync('ffmpeg', args, {
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 25000,
+  });
+  return sanitizeAndDeduplicateWebVtt(stdout);
+}
+
 export async function convertSubtitleBufferToVtt(
   buffer: Buffer,
   originalName: string,
@@ -296,22 +476,21 @@ export async function convertSubtitleBufferToVtt(
   const ext = path.extname(originalName).toLowerCase();
 
   if (ext === '.vtt') {
-    let text = buffer.toString('utf8').replace(/^\uFEFF/, '');
-    if (!text.trimStart().startsWith('WEBVTT')) {
-      text = `WEBVTT\n\n${text}`;
-    }
-    await fs.writeFile(outputVttPath, text, 'utf8');
+    const clean = sanitizeAndDeduplicateWebVtt(buffer.toString('utf8'));
+    await fs.writeFile(outputVttPath, clean, 'utf8');
     return;
   }
 
   const tmpIn = `${outputVttPath}.src${ext || '.srt'}`;
   await fs.writeFile(tmpIn, buffer);
   try {
-    await execFileAsync(
+    const { stdout } = await execFileAsync(
       'ffmpeg',
-      ['-y', '-hide_banner', '-loglevel', 'error', '-i', tmpIn, '-f', 'webvtt', outputVttPath],
-      { timeout: 10000 }
+      ['-hide_banner', '-loglevel', 'error', '-i', tmpIn, '-f', 'webvtt', 'pipe:1'],
+      { maxBuffer: 16 * 1024 * 1024, timeout: 15000 }
     );
+    const clean = sanitizeAndDeduplicateWebVtt(stdout);
+    await fs.writeFile(outputVttPath, clean, 'utf8');
   } finally {
     await fs.unlink(tmpIn).catch(() => {});
   }

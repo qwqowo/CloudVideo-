@@ -16,7 +16,7 @@ import type {
   QBitTorrent,
   QBitTransferInfo,
 } from '../src/services/qbittorrent.js';
-import { resolveSafePath } from '../src/services/media.js';
+import { resolveSafePath, sanitizeAndDeduplicateWebVtt } from '../src/services/media.js';
 import { LoginRateLimiter, signStreamToken, verifyStreamToken } from '../src/auth.js';
 
 const execFileAsync = promisify(execFile);
@@ -215,6 +215,33 @@ describe('CloudVideo v2.0 Backend Integration Suite', () => {
       resolveSafePath(downloadDir, 'show/ep01.mkv'),
       path.join(downloadDir, 'show', 'ep01.mkv')
     );
+
+    // Subtitle sanitizer strips empty {} tags, vector drawings, and deduplicates 3x layered ASS cues
+    const dirtyVtt = [
+      'WEBVTT',
+      '',
+      '00:00:05.000 --> 00:00:09.000',
+      '{\\blur4}三{}明治摆烂组',
+      '',
+      '00:00:05.000 --> 00:00:09.000',
+      '{\\bord3}三{}明治摆烂组',
+      '',
+      '00:00:05.000 --> 00:00:09.000',
+      '三{}明治摆烂组',
+      '',
+      '00:00:05.000 --> 00:00:09.000',
+      '{\\p1}m 0 0 l 100 0 100 50 0 50{\\p0}',
+      '',
+      '00:00:10.000 --> 00:00:13.000',
+      '{\\an8}<font color="#fff">顶部注释</font>',
+      '',
+    ].join('\n');
+    const cleaned = sanitizeAndDeduplicateWebVtt(dirtyVtt);
+    assert.equal(cleaned.match(/三明治摆烂组/g)?.length, 1);
+    assert.ok(!cleaned.includes('{}'));
+    assert.ok(!cleaned.includes('m 0 0 l 100'));
+    assert.ok(cleaned.includes('line:6%'));
+    assert.ok(cleaned.includes('顶部注释'));
   });
 
   it('probes MP4/MKV, serves Range 206, multi-slot smart thumbs, Remux, and custom uploaded SRT -> WebVTT', async () => {
