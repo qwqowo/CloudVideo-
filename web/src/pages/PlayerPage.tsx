@@ -18,6 +18,8 @@ import {
   Maximize2,
   Minimize2,
   SlidersHorizontal,
+  RotateCcw,
+  X,
 } from 'lucide-react';
 import type { DownloadLiveStatus, ProbeResponse, SubtitleTrack, TorrentFileItem } from '../types';
 import {
@@ -45,40 +47,82 @@ interface ParsedVttCue {
   alignTop: boolean;
 }
 
-type SubSize = 'sm' | 'md' | 'lg' | 'xl';
-type SubTheme = 'stroke' | 'frosted' | 'amber';
-type SubPos = 'low' | 'mid' | 'high';
-
 interface SubStylePrefs {
-  size: SubSize;
-  theme: SubTheme;
-  pos: SubPos;
+  fontSizePx: number;      // 14 - 52
+  bottomPct: number;       // 4 - 42 (%)
+  color: string;           // hex color
+  fontWeight: 400 | 500 | 600 | 700;
+  strokeStrength: 0 | 1 | 2 | 3;
+  bgOpacity: number;       // 0 - 85 (%)
+  secondaryScale: number;  // 60 - 100 (%)
   zhOnly: boolean;
+  swapBilingual: boolean;
 }
 
-const SUB_STYLE_STORAGE_KEY = 'cloudvideo_sub_style_v1';
+const SUB_STYLE_STORAGE_KEY = 'cloudvideo_sub_style_v2';
 
 const DEFAULT_SUB_STYLE: SubStylePrefs = {
-  size: 'md',
-  theme: 'stroke',
-  pos: 'mid',
+  fontSizePx: 22,
+  bottomPct: 10,
+  color: '#FFFFFF',
+  fontWeight: 600,
+  strokeStrength: 2,
+  bgOpacity: 0,
+  secondaryScale: 80,
   zhOnly: false,
+  swapBilingual: false,
 };
+
+const SUB_COLOR_SWATCHES = [
+  { label: '纯净白', hex: '#FFFFFF' },
+  { label: '经典黄', hex: '#FDE68A' },
+  { label: '柔灰白', hex: '#E4E4E7' },
+  { label: '冰河蓝', hex: '#BAE6FD' },
+  { label: '薄荷青', hex: '#A7F3D0' },
+];
+
+function clampNum(v: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
 
 function loadSubStylePrefs(): SubStylePrefs {
   try {
     const raw = localStorage.getItem(SUB_STYLE_STORAGE_KEY);
     if (!raw) return DEFAULT_SUB_STYLE;
     const p = JSON.parse(raw) as Partial<SubStylePrefs>;
+    const fw = p.fontWeight === 400 || p.fontWeight === 500 || p.fontWeight === 600 || p.fontWeight === 700
+      ? p.fontWeight
+      : 600;
+    const st = p.strokeStrength === 0 || p.strokeStrength === 1 || p.strokeStrength === 2 || p.strokeStrength === 3
+      ? p.strokeStrength
+      : 2;
     return {
-      size: p.size === 'sm' || p.size === 'md' || p.size === 'lg' || p.size === 'xl' ? p.size : 'md',
-      theme: p.theme === 'stroke' || p.theme === 'frosted' || p.theme === 'amber' ? p.theme : 'stroke',
-      pos: p.pos === 'low' || p.pos === 'mid' || p.pos === 'high' ? p.pos : 'mid',
+      fontSizePx: clampNum(p.fontSizePx, 14, 52, DEFAULT_SUB_STYLE.fontSizePx),
+      bottomPct: clampNum(p.bottomPct, 4, 42, DEFAULT_SUB_STYLE.bottomPct),
+      color: typeof p.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(p.color) ? p.color : '#FFFFFF',
+      fontWeight: fw,
+      strokeStrength: st,
+      bgOpacity: clampNum(p.bgOpacity, 0, 85, DEFAULT_SUB_STYLE.bgOpacity),
+      secondaryScale: clampNum(p.secondaryScale, 60, 100, DEFAULT_SUB_STYLE.secondaryScale),
       zhOnly: Boolean(p.zhOnly),
+      swapBilingual: Boolean(p.swapBilingual),
     };
   } catch {
     return DEFAULT_SUB_STYLE;
   }
+}
+
+function buildSubtitleTextShadow(strength: 0 | 1 | 2 | 3): string {
+  if (strength === 0) return '0 1px 4px rgba(0, 0, 0, 0.75)';
+  if (strength === 1) {
+    return '0 2px 5px rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.85), -1px -1px 0 rgba(0,0,0,0.85), 1px -1px 0 rgba(0,0,0,0.85), -1px 1px 0 rgba(0,0,0,0.85)';
+  }
+  if (strength === 2) {
+    return '0 2px 7px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.85), 1.5px 1.5px 0 rgba(0,0,0,0.95), -1.5px -1.5px 0 rgba(0,0,0,0.95), 1.5px -1.5px 0 rgba(0,0,0,0.95), -1.5px 1.5px 0 rgba(0,0,0,0.95), 0 1.5px 0 rgba(0,0,0,0.95), 0 -1.5px 0 rgba(0,0,0,0.95)';
+  }
+  return '0 3px 10px rgba(0,0,0,1), 0 0 16px rgba(0,0,0,0.95), 2px 2px 0 rgba(0,0,0,1), -2px -2px 0 rgba(0,0,0,1), 2px -2px 0 rgba(0,0,0,1), -2px 2px 0 rgba(0,0,0,1), 0 2px 0 rgba(0,0,0,1), 0 -2px 0 rgba(0,0,0,1), 2px 0 0 rgba(0,0,0,1), -2px 0 0 rgba(0,0,0,1)';
 }
 
 function parseVttTimeSec(ts: string): number {
@@ -825,6 +869,19 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
           <span className="px-3 py-1.5 rounded-full bg-white/[0.06] border border-white/[0.08] text-zinc-200">
             {mode === 'direct' ? '原生直出' : '无损 Remux'}
           </span>
+          {selectedSubId && (
+            <button
+              onClick={() => setShowSubStylePanel((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border transition ${
+                showSubStylePanel
+                  ? 'bg-white text-zinc-950 border-white font-medium'
+                  : 'bg-white/[0.07] text-zinc-100 border-white/[0.09] hover:bg-white/[0.13]'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              字幕调整
+            </button>
+          )}
           <button
             onClick={toggleStageFullscreen}
             title="支持高级字幕与手势的影院全屏 (快捷键 F)"
@@ -958,78 +1015,64 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 )}
               </video>
 
-              {/* Cinema-Grade Custom Subtitle Overlay (Top & Bottom Lanes, Bilingual Typography) */}
+              {/* Cinema-Grade Custom Subtitle Overlay (Fine-Grained User-Adjustable Style) */}
               {activeSubtitleCues.length > 0 && (() => {
                 const topCues = activeSubtitleCues.filter((c) => c.alignTop);
                 const bottomCues = activeSubtitleCues.filter((c) => !c.alignTop);
-                const primarySizeClass = stageFullscreen
-                  ? {
-                      sm: 'text-xl sm:text-2xl',
-                      md: 'text-2xl sm:text-3xl',
-                      lg: 'text-3xl sm:text-4xl',
-                      xl: 'text-4xl sm:text-5xl',
-                    }[subStyle.size]
-                  : {
-                      sm: 'text-sm sm:text-base',
-                      md: 'text-base sm:text-xl',
-                      lg: 'text-lg sm:text-2xl',
-                      xl: 'text-xl sm:text-3xl',
-                    }[subStyle.size];
-
-                const secondarySizeClass = stageFullscreen
-                  ? {
-                      sm: 'text-base sm:text-lg',
-                      md: 'text-lg sm:text-2xl',
-                      lg: 'text-xl sm:text-3xl',
-                      xl: 'text-2xl sm:text-4xl',
-                    }[subStyle.size]
-                  : {
-                      sm: 'text-xs sm:text-sm',
-                      md: 'text-xs sm:text-base',
-                      lg: 'text-sm sm:text-lg',
-                      xl: 'text-base sm:text-xl',
-                    }[subStyle.size];
-
-                const bottomOffsetClass =
-                  subStyle.pos === 'low'
-                    ? 'bottom-12 sm:bottom-14'
-                    : subStyle.pos === 'high'
-                      ? 'bottom-20 sm:bottom-24'
-                      : 'bottom-14 sm:bottom-16';
-
-                const primaryColor =
-                  subStyle.theme === 'amber' ? 'text-amber-200' : 'text-white';
-                const secondaryColor =
-                  subStyle.theme === 'amber' ? 'text-amber-100/80' : 'text-zinc-100/85';
+                const effectiveFontPx = Math.round(
+                  subStyle.fontSizePx * (stageFullscreen ? 1.35 : 1)
+                );
+                const secondaryFontPx = Math.max(
+                  11,
+                  Math.round(effectiveFontPx * (subStyle.secondaryScale / 100))
+                );
+                const textShadow = buildSubtitleTextShadow(subStyle.strokeStrength);
+                const hasBg = subStyle.bgOpacity > 0;
 
                 const renderCueGroup = (cues: ParsedVttCue[]) => {
                   const allLines = cues.flatMap((c) => c.lines);
                   const hasZh = allLines.some(isChinesePrimaryLine);
                   const hasForeign = allLines.some(isJapaneseOrLatinLine);
                   const isBilingual = hasZh && hasForeign;
-                  const visibleLines =
+                  let visibleLines =
                     isBilingual && subStyle.zhOnly
                       ? allLines.filter((l) => !isJapaneseOrLatinLine(l))
-                      : allLines;
+                      : [...allLines];
+
+                  if (isBilingual && !subStyle.zhOnly && subStyle.swapBilingual && visibleLines.length >= 2) {
+                    const zhLines = visibleLines.filter((l) => !isJapaneseOrLatinLine(l));
+                    const foreignLines = visibleLines.filter(isJapaneseOrLatinLine);
+                    // Swap whichever language was originally first
+                    visibleLines = isJapaneseOrLatinLine(visibleLines[0])
+                      ? [...zhLines, ...foreignLines]
+                      : [...foreignLines, ...zhLines];
+                  }
 
                   return (
                     <div
                       className={`inline-flex flex-col items-center gap-0.5 max-w-[92%] text-center leading-snug tracking-wide ${
-                        subStyle.theme === 'frosted'
-                          ? 'px-4 py-1.5 rounded-2xl bg-black/55 backdrop-blur-md shadow-lg'
-                          : 'cinema-sub-stroke'
+                        hasBg ? 'px-4 py-1.5 rounded-2xl backdrop-blur-md shadow-lg' : ''
                       }`}
+                      style={{
+                        backgroundColor: hasBg
+                          ? `rgba(9, 9, 11, ${(subStyle.bgOpacity / 100).toFixed(2)})`
+                          : 'transparent',
+                        textShadow,
+                      }}
                     >
                       {visibleLines.map((line, i) => {
                         const isSecondary = isBilingual && isJapaneseOrLatinLine(line);
                         return (
                           <div
                             key={`${i}-${line}`}
-                            className={
-                              isSecondary
-                                ? `${secondarySizeClass} ${secondaryColor} font-normal`
-                                : `${primarySizeClass} ${primaryColor} font-semibold`
-                            }
+                            style={{
+                              fontSize: `${isSecondary ? secondaryFontPx : effectiveFontPx}px`,
+                              fontWeight: isSecondary
+                                ? Math.max(400, subStyle.fontWeight - 100)
+                                : subStyle.fontWeight,
+                              color: subStyle.color,
+                              opacity: isSecondary ? 0.86 : 1,
+                            }}
                           >
                             {line}
                           </div>
@@ -1048,7 +1091,8 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                     )}
                     {bottomCues.length > 0 && (
                       <div
-                        className={`pointer-events-none absolute ${bottomOffsetClass} inset-x-4 z-20 flex justify-center transition-all`}
+                        className="pointer-events-none absolute inset-x-4 z-20 flex justify-center transition-[bottom] duration-150"
+                        style={{ bottom: `${subStyle.bottomPct}%` }}
                       >
                         {renderCueGroup(bottomCues)}
                       </div>
@@ -1056,6 +1100,149 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                   </>
                 );
               })()}
+
+              {/* Fullscreen Floating Quick Controls (Subtitle Adjust & Exit Fullscreen) */}
+              {stageFullscreen && (
+                <div className="absolute top-4 right-4 z-30 flex items-center gap-2 opacity-25 hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  {selectedSubId && (
+                    <button
+                      type="button"
+                      onClick={() => setShowSubStylePanel((v) => !v)}
+                      className="px-3 py-1.5 rounded-full bg-black/70 border border-white/15 backdrop-blur-md text-xs text-white flex items-center gap-1.5"
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      字幕调整
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={toggleStageFullscreen}
+                    className="px-3 py-1.5 rounded-full bg-black/70 border border-white/15 backdrop-blur-md text-xs text-white flex items-center gap-1.5"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    退出全屏
+                  </button>
+                </div>
+              )}
+
+              {/* Floating Subtitle Studio Inside Fullscreen */}
+              {stageFullscreen && selectedSubId && showSubStylePanel && (
+                <div
+                  className="absolute top-14 right-4 z-30 w-80 max-w-[92vw] cinema-glass rounded-2xl p-4 space-y-3 text-xs shadow-2xl"
+                  onTouchStart={(e) => e.stopPropagation()}
+                  onTouchMove={(e) => e.stopPropagation()}
+                  onTouchEnd={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-white">字幕实时调整</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowSubStylePanel(false)}
+                      className="p-1 rounded-full text-zinc-400 hover:text-white"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400 shrink-0">字号 {subStyle.fontSizePx}px</span>
+                      <input
+                        type="range"
+                        min={14}
+                        max={52}
+                        value={subStyle.fontSizePx}
+                        onChange={(e) => updateSubStyle({ fontSizePx: Number(e.target.value) })}
+                        className="w-40 accent-white"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400 shrink-0">位置 {subStyle.bottomPct}%</span>
+                      <input
+                        type="range"
+                        min={4}
+                        max={42}
+                        value={subStyle.bottomPct}
+                        onChange={(e) => updateSubStyle({ bottomPct: Number(e.target.value) })}
+                        className="w-40 accent-white"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400 shrink-0">底框 {subStyle.bgOpacity}%</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={85}
+                        step={5}
+                        value={subStyle.bgOpacity}
+                        onChange={(e) => updateSubStyle({ bgOpacity: Number(e.target.value) })}
+                        className="w-40 accent-white"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400 shrink-0">描边</span>
+                      <div className="flex gap-1">
+                        {([0, 1, 2, 3] as const).map((lv) => (
+                          <button
+                            key={lv}
+                            type="button"
+                            onClick={() => updateSubStyle({ strokeStrength: lv })}
+                            className={`px-2 py-0.5 rounded-full ${
+                              subStyle.strokeStrength === lv
+                                ? 'bg-white text-zinc-950 font-medium'
+                                : 'bg-white/[0.08] text-zinc-300'
+                            }`}
+                          >
+                            {['无', '细', '中', '重'][lv]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-400">颜色</span>
+                      <div className="flex items-center gap-1.5">
+                        {SUB_COLOR_SWATCHES.map((sw) => (
+                          <button
+                            key={sw.hex}
+                            type="button"
+                            title={sw.label}
+                            onClick={() => updateSubStyle({ color: sw.hex })}
+                            className={`w-5 h-5 rounded-full border ${
+                              subStyle.color.toLowerCase() === sw.hex.toLowerCase()
+                                ? 'border-white scale-110 ring-2 ring-white/40'
+                                : 'border-white/20'
+                            }`}
+                            style={{ backgroundColor: sw.hex }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => updateSubStyle({ zhOnly: !subStyle.zhOnly })}
+                        className={`px-2.5 py-1 rounded-full border ${
+                          subStyle.zhOnly
+                            ? 'bg-amber-400/20 border-amber-400/40 text-amber-200'
+                            : 'bg-white/[0.06] border-white/10 text-zinc-300'
+                        }`}
+                      >
+                        仅看中文：{subStyle.zhOnly ? '开' : '关'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateSubStyle({ swapBilingual: !subStyle.swapBilingual })}
+                        className={`px-2.5 py-1 rounded-full border ${
+                          subStyle.swapBilingual
+                            ? 'bg-white/15 border-white/30 text-white'
+                            : 'bg-white/[0.06] border-white/10 text-zinc-300'
+                        }`}
+                      >
+                        上下互换
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Floating Next-Episode Card */}
               {showNextPrompt && nextEpisode?.existsOnDisk && (
@@ -1364,93 +1551,309 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
               </div>
 
-              {/* Cinema Subtitle Appearance Studio */}
+              {/* Pro Cinema Subtitle Appearance Studio (Fine-Grained Sliders + Live Preview) */}
               {selectedSubId && showSubStylePanel && (
-                <div className="rounded-2xl bg-white/[0.03] border border-white/[0.08] p-4 flex flex-wrap items-center justify-between gap-4 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="text-zinc-400">风格</span>
-                    {(
-                      [
-                        ['stroke', '影院描边'],
-                        ['frosted', '柔雾半透'],
-                        ['amber', '经典暖黄'],
-                      ] as const
-                    ).map(([id, label]) => (
+                <div className="rounded-2xl bg-white/[0.03] border border-white/[0.08] p-5 space-y-4 text-xs">
+                  {/* Top Bar: Presets + Reset */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.06]">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-zinc-400 mr-1">快捷预设</span>
                       <button
-                        key={id}
                         type="button"
-                        onClick={() => updateSubStyle({ theme: id })}
-                        className={`px-3 py-1 rounded-full transition ${
-                          subStyle.theme === id
-                            ? 'bg-white text-zinc-950 font-medium'
-                            : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
-                        }`}
+                        onClick={() =>
+                          updateSubStyle({
+                            color: '#FFFFFF',
+                            strokeStrength: 2,
+                            bgOpacity: 0,
+                            fontWeight: 600,
+                          })
+                        }
+                        className="px-3 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.14] text-zinc-200 transition"
                       >
-                        {label}
+                        影院描边
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSubStyle({
+                            color: '#FFFFFF',
+                            strokeStrength: 0,
+                            bgOpacity: 55,
+                            fontWeight: 500,
+                          })
+                        }
+                        className="px-3 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.14] text-zinc-200 transition"
+                      >
+                        柔雾胶囊
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSubStyle({
+                            color: '#FDE68A',
+                            strokeStrength: 2,
+                            bgOpacity: 0,
+                            fontWeight: 600,
+                          })
+                        }
+                        className="px-3 py-1 rounded-full bg-amber-400/15 hover:bg-amber-400/25 text-amber-200 transition"
+                      >
+                        经典暖黄
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateSubStyle(DEFAULT_SUB_STYLE);
+                        setSubOffsetSec(0);
+                      }}
+                      className="inline-flex items-center gap-1 text-zinc-400 hover:text-white transition"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      恢复默认
+                    </button>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-zinc-400 mr-0.5">字号</span>
-                    {(
-                      [
-                        ['sm', '小'],
-                        ['md', '标准'],
-                        ['lg', '大'],
-                        ['xl', '特大'],
-                      ] as const
-                    ).map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => updateSubStyle({ size: id })}
-                        className={`px-2.5 py-1 rounded-full transition ${
-                          subStyle.size === id
-                            ? 'bg-white text-zinc-950 font-medium'
-                            : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                  {/* Live Sample Preview Strip */}
+                  <div className="rounded-xl bg-gradient-to-r from-zinc-900 via-zinc-800/70 to-zinc-900 border border-white/[0.06] py-3.5 px-4 flex justify-center overflow-hidden">
+                    <div
+                      className={`inline-flex flex-col items-center gap-0.5 text-center leading-snug ${
+                        subStyle.bgOpacity > 0 ? 'px-4 py-1.5 rounded-2xl backdrop-blur-md' : ''
+                      }`}
+                      style={{
+                        backgroundColor:
+                          subStyle.bgOpacity > 0
+                            ? `rgba(9, 9, 11, ${(subStyle.bgOpacity / 100).toFixed(2)})`
+                            : 'transparent',
+                        textShadow: buildSubtitleTextShadow(subStyle.strokeStrength),
+                      }}
+                    >
+                      {(() => {
+                        const zhEl = (
+                          <div
+                            key="zh"
+                            style={{
+                              fontSize: `${Math.min(34, subStyle.fontSizePx)}px`,
+                              fontWeight: subStyle.fontWeight,
+                              color: subStyle.color,
+                            }}
+                          >
+                            影院级字幕实时预览效果
+                          </div>
+                        );
+                        const jpEl = !subStyle.zhOnly ? (
+                          <div
+                            key="jp"
+                            style={{
+                              fontSize: `${Math.max(
+                                11,
+                                Math.round(
+                                  Math.min(34, subStyle.fontSizePx) * (subStyle.secondaryScale / 100)
+                                )
+                              )}px`,
+                              fontWeight: Math.max(400, subStyle.fontWeight - 100),
+                              color: subStyle.color,
+                              opacity: 0.86,
+                            }}
+                          >
+                            Cinema Subtitle Live Preview
+                          </div>
+                        ) : null;
+                        return subStyle.swapBilingual ? [zhEl, jpEl] : [jpEl, zhEl];
+                      })()}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-zinc-400 mr-0.5">高度</span>
-                    {(
-                      [
-                        ['low', '偏低'],
-                        ['mid', '标准'],
-                        ['high', '偏高'],
-                      ] as const
-                    ).map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => updateSubStyle({ pos: id })}
-                        className={`px-2.5 py-1 rounded-full transition ${
-                          subStyle.pos === id
-                            ? 'bg-white text-zinc-950 font-medium'
-                            : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                  {/* Fine-Grained Sliders Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>字号大小</span>
+                        <span className="text-white">{subStyle.fontSizePx} px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={14}
+                        max={52}
+                        value={subStyle.fontSizePx}
+                        onChange={(e) => updateSubStyle({ fontSizePx: Number(e.target.value) })}
+                        className="w-full accent-white cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>距底高度</span>
+                        <span className="text-white">{subStyle.bottomPct}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={4}
+                        max={42}
+                        value={subStyle.bottomPct}
+                        onChange={(e) => updateSubStyle({ bottomPct: Number(e.target.value) })}
+                        className="w-full accent-white cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>背景黑底透明度</span>
+                        <span className="text-white">
+                          {subStyle.bgOpacity === 0 ? '无底框' : `${subStyle.bgOpacity}%`}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={85}
+                        step={5}
+                        value={subStyle.bgOpacity}
+                        onChange={(e) => updateSubStyle({ bgOpacity: Number(e.target.value) })}
+                        className="w-full accent-white cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-zinc-400 tabular-nums">
+                        <span>双语副行缩放</span>
+                        <span className="text-white">{subStyle.secondaryScale}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={60}
+                        max={100}
+                        step={5}
+                        value={subStyle.secondaryScale}
+                        onChange={(e) => updateSubStyle({ secondaryScale: Number(e.target.value) })}
+                        className="w-full accent-white cursor-pointer"
+                      />
+                    </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => updateSubStyle({ zhOnly: !subStyle.zhOnly })}
-                    className={`px-3 py-1 rounded-full border transition ${
-                      subStyle.zhOnly
-                        ? 'bg-amber-400/20 border-amber-400/40 text-amber-200'
-                        : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:text-white'
-                    }`}
-                  >
-                    双语时仅看中文：{subStyle.zhOnly ? '开' : '关'}
-                  </button>
+                  {/* Color, Weight, Stroke & Bilingual Toggles */}
+                  <div className="flex flex-wrap items-center justify-between gap-4 pt-3 border-t border-white/[0.06]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-zinc-400">颜色</span>
+                      {SUB_COLOR_SWATCHES.map((sw) => (
+                        <button
+                          key={sw.hex}
+                          type="button"
+                          title={sw.label}
+                          onClick={() => updateSubStyle({ color: sw.hex })}
+                          className={`w-5 h-5 rounded-full border transition ${
+                            subStyle.color.toLowerCase() === sw.hex.toLowerCase()
+                              ? 'border-white scale-110 ring-2 ring-white/40'
+                              : 'border-white/20 hover:scale-105'
+                          }`}
+                          style={{ backgroundColor: sw.hex }}
+                        />
+                      ))}
+                      <label
+                        title="自定义颜色"
+                        className="w-5 h-5 rounded-full border border-white/25 overflow-hidden cursor-pointer flex items-center justify-center bg-gradient-to-tr from-rose-400 via-amber-300 to-sky-400"
+                      >
+                        <input
+                          type="color"
+                          value={subStyle.color}
+                          onChange={(e) => updateSubStyle({ color: e.target.value })}
+                          className="opacity-0 w-full h-full cursor-pointer"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-zinc-400 mr-0.5">描边</span>
+                      {([0, 1, 2, 3] as const).map((lv) => (
+                        <button
+                          key={lv}
+                          type="button"
+                          onClick={() => updateSubStyle({ strokeStrength: lv })}
+                          className={`px-2.5 py-1 rounded-full transition ${
+                            subStyle.strokeStrength === lv
+                              ? 'bg-white text-zinc-950 font-medium'
+                              : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                          }`}
+                        >
+                          {['无', '细', '标准', '重'][lv]}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-zinc-400 mr-0.5">字重</span>
+                      {([400, 500, 600, 700] as const).map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          onClick={() => updateSubStyle({ fontWeight: w })}
+                          className={`px-2.5 py-1 rounded-full transition ${
+                            subStyle.fontWeight === w
+                              ? 'bg-white text-zinc-950 font-medium'
+                              : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                          }`}
+                        >
+                          {{ 400: '细', 500: '常规', 600: '加粗', 700: '特粗' }[w]}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateSubStyle({ zhOnly: !subStyle.zhOnly })}
+                        className={`px-3 py-1 rounded-full border transition ${
+                          subStyle.zhOnly
+                            ? 'bg-amber-400/20 border-amber-400/40 text-amber-200'
+                            : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:text-white'
+                        }`}
+                      >
+                        双语仅看中文：{subStyle.zhOnly ? '开' : '关'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateSubStyle({ swapBilingual: !subStyle.swapBilingual })}
+                        className={`px-3 py-1 rounded-full border transition ${
+                          subStyle.swapBilingual
+                            ? 'bg-white/15 border-white/30 text-white'
+                            : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:text-white'
+                        }`}
+                      >
+                        双语上下互换：{subStyle.swapBilingual ? '开' : '关'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Fine Timing Sync Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-white/[0.06]">
+                    <span className="text-zinc-400 tabular-nums">
+                      时间轴精细同步：
+                      <strong className="text-white ml-1">
+                        {subOffsetSec >= 0 ? `+${subOffsetSec.toFixed(1)}s` : `${subOffsetSec.toFixed(1)}s`}
+                      </strong>
+                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {[-1, -0.5, -0.1, 0, 0.1, 0.5, 1].map((delta) => (
+                        <button
+                          key={delta}
+                          type="button"
+                          onClick={() =>
+                            delta === 0
+                              ? setSubOffsetSec(0)
+                              : setSubOffsetSec((o) => Number((o + delta).toFixed(1)))
+                          }
+                          className={`px-2.5 py-1 rounded-full tabular-nums transition ${
+                            delta === 0
+                              ? 'bg-white/[0.1] text-white hover:bg-white/[0.18]'
+                              : 'bg-white/[0.05] text-zinc-300 hover:bg-white/[0.12]'
+                          }`}
+                        >
+                          {delta === 0 ? '归零' : delta > 0 ? `+${delta}s` : `${delta}s`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
