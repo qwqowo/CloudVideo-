@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch, setUnauthorizedHandler } from './lib/api';
 import type { TorrentsResponse } from './types';
 import { LoginPage } from './pages/LoginPage';
 import { Layout, type NavTab } from './components/Layout';
 import { LibraryPage } from './pages/LibraryPage';
 import { HubPage } from './pages/HubPage';
+import { ActivityPage } from './pages/ActivityPage';
 import { PlayerPage } from './pages/PlayerPage';
-import { SpeedTestPage } from './pages/SpeedTestPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AddTorrentModal } from './components/AddTorrentModal';
 
@@ -20,6 +20,7 @@ export const App: React.FC = () => {
   const [authState, setAuthState] = useState<'checking' | 'guest' | 'authed'>('checking');
   const [tab, setTab] = useState<NavTab>('library');
   const [player, setPlayer] = useState<ActivePlayer | null>(null);
+  const [pendingDetailHash, setPendingDetailHash] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [data, setData] = useState<TorrentsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,6 +66,11 @@ export const App: React.FC = () => {
     return () => clearInterval(id);
   }, [authState, fetchTorrents]);
 
+  const activeDownloadsCount = useMemo(
+    () => (data?.torrents ?? []).filter((t) => t.progress < 0.999).length,
+    [data?.torrents]
+  );
+
   const handleLogout = async () => {
     await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     setAuthState('guest');
@@ -73,8 +79,8 @@ export const App: React.FC = () => {
 
   if (authState === 'checking') {
     return (
-      <div className="min-h-screen flex items-center justify-center text-xs font-mono tracking-[0.22em] text-cyan-400">
-        INITIALIZING DECK...
+      <div className="min-h-screen flex items-center justify-center text-xs text-zinc-400">
+        正在进入影院...
       </div>
     );
   }
@@ -94,12 +100,16 @@ export const App: React.FC = () => {
       onLogout={() => void handleLogout()}
       storage={data?.storage ?? null}
       transfer={data?.transfer ?? { dlSpeed: 0, upSpeed: 0 }}
+      activeDownloadsCount={activeDownloadsCount}
     >
       {banner && (
-        <div className="mb-4 border border-amber-500/40 bg-amber-950/30 px-4 py-2.5 text-xs font-mono text-amber-200 flex items-center justify-between">
-          <span>WARN // {banner}</span>
-          <button onClick={() => setBanner('')} className="text-amber-300 hover:underline">
-            DISMISS
+        <div className="mb-5 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200 flex items-center justify-between gap-3">
+          <span>{banner}</span>
+          <button
+            onClick={() => setBanner('')}
+            className="text-amber-300 hover:text-white shrink-0"
+          >
+            知道了
           </button>
         </div>
       )}
@@ -124,7 +134,10 @@ export const App: React.FC = () => {
           loading={loading}
           onRefresh={() => void fetchTorrents()}
           onOpenAdd={() => setAddOpen(true)}
+          onGoDiscover={() => setTab('hub')}
           onPlay={(hash, fileIndex, torrentName) => setPlayer({ hash, fileIndex, torrentName })}
+          initialDetailHash={pendingDetailHash}
+          onClearInitialDetail={() => setPendingDetailHash(null)}
         />
       ) : tab === 'hub' ? (
         <HubPage
@@ -137,8 +150,16 @@ export const App: React.FC = () => {
             void fetchTorrents();
           }}
         />
-      ) : tab === 'speedtest' ? (
-        <SpeedTestPage />
+      ) : tab === 'activity' ? (
+        <ActivityPage
+          data={data}
+          onRefresh={() => void fetchTorrents()}
+          onOpenDetail={(hash) => {
+            setPendingDetailHash(hash);
+            setTab('library');
+          }}
+          onPlay={(hash, fileIndex, torrentName) => setPlayer({ hash, fileIndex, torrentName })}
+        />
       ) : (
         <SettingsPage onUpdated={() => void fetchTorrents()} />
       )}
@@ -146,6 +167,7 @@ export const App: React.FC = () => {
       <AddTorrentModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
+        onGoDiscover={() => setTab('hub')}
         onAdded={(warning) => {
           if (warning) setBanner(warning);
           setPlayer(null);

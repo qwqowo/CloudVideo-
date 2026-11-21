@@ -11,7 +11,6 @@ import {
   Volume2,
   AlertCircle,
   Film,
-  Radio,
   Upload,
   SkipForward,
   Keyboard,
@@ -125,7 +124,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       setAudioTrack(0);
       setSelectedSubId(probe.probe.subtitles[0]?.id || '');
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载视频信息失败');
+      setError(err instanceof Error ? err.message : '加载影片信息失败');
     } finally {
       setLoading(false);
     }
@@ -135,7 +134,6 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     void loadMedia();
   }, [loadMedia]);
 
-  // Poll live download status while streaming an in-progress torrent file
   useEffect(() => {
     if (!liveDownload || liveDownload.fileProgress >= 0.999) return;
     const id = setInterval(async () => {
@@ -156,7 +154,6 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     [probeData, selectedSubId]
   );
 
-  // Build shifted WebVTT blob URL when user adjusts subtitle time offset
   useEffect(() => {
     let revokedUrl = '';
     let cancelled = false;
@@ -196,7 +193,6 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
     return episodes[curPos + 1];
   }, [episodes, fileIndex]);
 
-  // Keyboard shortcuts for cinema playback
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -282,16 +278,16 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
         setProbeData((prev) => (prev ? { ...prev, mediaItem: res.item } : prev));
         if (res.preloadedNext) {
           const epName = res.preloadedNext.preloadedName.split('/').pop();
-          setNotice(`追剧托管已自动开始预载下一集：${epName}`);
+          setNotice(`追剧托管已自动预载下一集：${epName}`);
           onDataChanged();
         } else if (res.unloadedImmediately) {
-          setNotice('已达看完阈值，按 0h 策略已立即卸载并释放硬盘空间。');
+          setNotice('已达看完阈值，已自动卸载释放硬盘空间。');
           onDataChanged();
         } else if (res.item.deleteAfterAt) {
           setNotice(`已标记看完，${formatCountdown(res.item.deleteAfterAt)}（可点击锁定保留）`);
         }
       } catch {
-        // ignore transient reporting errors
+        // ignore
       }
     },
     [probeData, torrentHash, fileIndex, onDataChanged]
@@ -346,7 +342,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       );
       setSelectedSubId(res.subtitle.id);
       setSubOffsetSec(0);
-      setNotice(`已挂载外挂字幕：${file.name}`);
+      setNotice(`已加载字幕：${file.name}`);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : '字幕上传失败');
     } finally {
@@ -418,7 +414,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
       }
     );
     setProbeData((prev) => (prev ? { ...prev, mediaItem: res.item } : prev));
-    setNotice(nextPinned ? '已锁定，自动卸载将跳过本视频' : '已取消锁定');
+    setNotice(nextPinned ? '已锁定，自动清理将跳过本片' : '已取消锁定');
     onDataChanged();
   };
 
@@ -435,98 +431,89 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
   const dlFastEnough = probeData ? dlMbps >= probeData.probe.requiredMbps : true;
 
   return (
-    <div className="space-y-4">
-      {/* Top Bar */}
+    <div className="space-y-5">
+      {/* Quiet Top Bar */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 px-3 py-1.5 border border-white/10 bg-[#0a0f16] hover:border-cyan-400/50 text-xs font-mono text-zinc-200 transition"
-        >
+        <button onClick={onBack} className="btn-ghost px-4 py-2 text-xs">
           <ArrowLeft className="w-3.5 h-3.5" />
-          RETURN // 媒体库
+          返回影院
         </button>
 
-        <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-400 flex-wrap">
+        <div className="flex items-center gap-2 text-xs flex-wrap">
           {isBufferingLive && (
             <span
-              className={`inline-flex items-center gap-1.5 px-2 py-0.5 border ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border tabular-nums ${
                 dlFastEnough
-                  ? 'border-emerald-500/40 bg-emerald-950/40 text-emerald-300'
-                  : 'border-amber-500/40 bg-amber-950/40 text-amber-300'
+                  ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+                  : 'border-amber-400/30 bg-amber-500/10 text-amber-200'
               }`}
             >
-              <Activity className="w-3 h-3" />
-              边下边播 {(liveDownload.fileProgress * 100).toFixed(1)}% · BT {dlMbps} Mbps (
-              {formatSpeed(liveDownload.dlSpeed)})
-              {!dlFastEnough && probeData ? ` < 需 ${probeData.probe.requiredMbps}M` : ''}
+              <Activity className="w-3.5 h-3.5" />
+              边下边播 {(liveDownload.fileProgress * 100).toFixed(1)}% ·{' '}
+              {formatSpeed(liveDownload.dlSpeed)}
+              {!dlFastEnough && probeData ? `（建议 ≥ ${probeData.probe.requiredMbps} Mbps）` : ''}
             </span>
           )}
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 border border-cyan-400/30 bg-cyan-950/40 text-cyan-300">
-            <Radio className="w-3 h-3" />
-            {mode === 'direct' ? 'DIRECT STREAM' : 'LOSSLESS REMUX'}
+          <span className="px-3 py-1.5 rounded-full bg-white/[0.06] border border-white/[0.08] text-zinc-200">
+            {mode === 'direct' ? '原生直出' : '无损 Remux'}
           </span>
           <button
             onClick={() => setShowShortcuts((s) => !s)}
-            className="inline-flex items-center gap-1 px-2 py-0.5 border border-white/10 hover:border-cyan-400/40 text-zinc-400 hover:text-zinc-200"
+            className="btn-ghost px-3 py-1.5 text-xs"
           >
-            <Keyboard className="w-3 h-3" />
+            <Keyboard className="w-3.5 h-3.5" />
             快捷键
           </button>
         </div>
       </div>
 
       {showShortcuts && (
-        <div className="hud-panel px-4 py-2.5 text-[11px] font-mono text-zinc-300 flex items-center gap-4 flex-wrap">
+        <div className="cinema-surface rounded-2xl px-4 py-3 text-xs text-zinc-300 flex items-center gap-4 flex-wrap">
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">Space</kbd> 播放/暂停
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">Space</kbd> 播放/暂停
           </span>
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">← / →</kbd> ±10 秒
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">← / →</kbd> 快进/退 10 秒
           </span>
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">↑ / ↓</kbd> 音量
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">↑ / ↓</kbd> 音量
           </span>
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">[ / ]</kbd> 倍速
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">[ / ]</kbd> 倍速
           </span>
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">F</kbd> 全屏
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">F</kbd> 全屏
           </span>
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">M</kbd> 静音
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">M</kbd> 静音
           </span>
           <span>
-            <kbd className="px-1.5 py-0.5 bg-white/10 text-cyan-300">N</kbd> 下一集
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white mr-1">N</kbd> 下一集
           </span>
         </div>
       )}
 
       {loading ? (
-        <div className="hud-panel p-20 text-center">
-          <div className="text-xs font-mono tracking-[0.22em] text-cyan-400 animate-pulse">
-            PROBING MEDIA STREAM...
-          </div>
-          <div className="text-xs text-zinc-500 mt-2">正在解析编码、码率与字幕轨</div>
+        <div className="cinema-surface rounded-3xl p-20 text-center">
+          <div className="text-sm text-white animate-pulse">正在准备影片流...</div>
+          <div className="text-xs text-zinc-500 mt-1.5">解析编码、音轨与字幕中</div>
         </div>
       ) : error ? (
-        <div className="border border-rose-500/40 bg-rose-950/30 p-6 flex items-start gap-3">
+        <div className="rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
           <div>
-            <div className="text-sm font-mono font-semibold text-rose-200">STREAM INIT FAILED</div>
+            <div className="text-sm font-medium text-rose-200">无法启动播放</div>
             <p className="text-xs text-rose-200/80 mt-1">{error}</p>
-            <button
-              onClick={() => void loadMedia()}
-              className="mt-3 px-4 py-1.5 bg-rose-500/20 border border-rose-400/50 hover:bg-rose-500/30 text-xs font-mono text-rose-100"
-            >
-              RETRY PROBE
+            <button onClick={() => void loadMedia()} className="btn-ivory mt-3 px-4 py-1.5 text-xs">
+              重试
             </button>
           </div>
         </div>
       ) : probeData ? (
-        <div className="grid grid-cols-1 xl:grid-cols-4 gap-5">
-          {/* Main Cinema Stage */}
-          <div className="xl:col-span-3 space-y-4">
-            <div className="hud-panel p-0 overflow-hidden bg-black relative">
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+          {/* Cinema Stage */}
+          <div className={episodes.length > 1 ? 'xl:col-span-3 space-y-4' : 'xl:col-span-4 space-y-4'}>
+            <div className="rounded-3xl overflow-hidden bg-black border border-white/[0.08] shadow-[0_28px_70px_-20px_rgba(0,0,0,0.95)] relative">
               <video
                 key={`${mode}-${audioTrack}-${remuxOffset}`}
                 ref={videoRef}
@@ -558,29 +545,26 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 )}
               </video>
 
-              {/* Next-Episode Binge Overlay */}
+              {/* Floating Next-Episode Card */}
               {showNextPrompt && nextEpisode?.existsOnDisk && (
-                <div className="absolute bottom-14 right-4 z-20 hud-panel p-3.5 max-w-xs space-y-2.5 shadow-2xl">
-                  <div className="text-[10px] font-mono tracking-[0.2em] text-cyan-400">
-                    NEXT EPISODE READY
-                  </div>
+                <div className="absolute bottom-14 right-4 z-20 cinema-glass rounded-2xl p-4 max-w-xs space-y-3 shadow-2xl">
+                  <div className="text-[11px] text-zinc-400">下一集已就绪</div>
                   <div className="text-xs font-medium text-white truncate">
                     {nextEpisode.name.split('/').pop()}
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => onSelectEpisode(nextEpisode.index)}
-                      className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 bg-cyan-400 hover:bg-cyan-300 text-[11px] font-mono font-bold text-zinc-950"
+                      className="btn-ivory flex-1 py-1.5 text-xs"
                     >
-                      <SkipForward className="w-3 h-3" />
+                      <SkipForward className="w-3.5 h-3.5" />
                       立即连播
                     </button>
                     <button
                       onClick={() => void handleMarkWatched(true, true)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 border border-rose-500/50 bg-rose-950/60 hover:bg-rose-600 text-[11px] font-mono text-rose-200 hover:text-white"
-                      title="卸载当前集并播放下一集（最省硬盘）"
+                      className="px-3 py-1.5 rounded-full bg-rose-500/20 hover:bg-rose-500 text-rose-200 hover:text-white text-xs transition"
+                      title="卸载本集并播放下一集"
                     >
-                      <Trash2 className="w-3 h-3" />
                       卸本集连播
                     </button>
                   </div>
@@ -588,11 +572,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
               )}
 
               {mode === 'remux' && totalDuration > 0 && (
-                <div className="bg-[#06090e] border-t border-white/10 px-4 py-2.5 flex items-center gap-3">
-                  <span className="text-[10px] font-mono tracking-wider text-cyan-400 shrink-0">
-                    REMUX SEEK
-                  </span>
-                  <span className="text-xs font-mono text-zinc-200 shrink-0">
+                <div className="bg-[#111115] border-t border-white/[0.08] px-5 py-3 flex items-center gap-3">
+                  <span className="text-xs text-zinc-400 shrink-0">进度跳转</span>
+                  <span className="text-xs text-zinc-200 tabular-nums shrink-0">
                     {formatDuration(currentTime)}
                   </span>
                   <input
@@ -605,9 +587,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       setRemuxOffset(Math.floor(sec));
                       setCurrentTime(Math.floor(sec));
                     }}
-                    className="flex-1 accent-cyan-400 cursor-pointer"
+                    className="flex-1 accent-white cursor-pointer"
                   />
-                  <span className="text-xs font-mono text-zinc-500 shrink-0">
+                  <span className="text-xs text-zinc-500 tabular-nums shrink-0">
                     {formatDuration(totalDuration)}
                   </span>
                 </div>
@@ -615,23 +597,19 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
             </div>
 
             {directPlaybackError && mode === 'direct' && (
-              <div className="border border-amber-500/40 bg-amber-950/35 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="text-xs text-amber-200">
-                  <span className="font-mono font-bold mr-2">CODEC ALERT //</span>
-                  当前浏览器无法原生直出此封装或音轨（{probeData.probe.container.toUpperCase()} /{' '}
-                  {probeData.probe.audioCodec.toUpperCase()}），可一键切至无损换封装或拉起本地播放器。
+                  浏览器不支持直接解码此封装或音轨（{probeData.probe.container.toUpperCase()} /{' '}
+                  {probeData.probe.audioCodec.toUpperCase()}），可一键切换无损 Remux 或使用本地播放器打开。
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => switchToRemux(currentTime)}
-                    className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-xs font-mono font-bold text-zinc-950 transition"
+                    className="btn-ivory px-4 py-1.5 text-xs"
                   >
                     切换无损 Remux
                   </button>
-                  <a
-                    href={probeData.urls.potplayer}
-                    className="px-3 py-1.5 border border-amber-400/50 text-xs font-mono text-amber-200 hover:bg-amber-400/15 transition"
-                  >
+                  <a href={probeData.urls.potplayer} className="btn-ghost px-3.5 py-1.5 text-xs">
                     PotPlayer
                   </a>
                 </div>
@@ -639,12 +617,12 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
             )}
 
             {notice && (
-              <div className="border border-emerald-500/40 bg-emerald-950/30 px-4 py-2.5 text-xs font-mono text-emerald-200 flex items-center justify-between gap-2">
-                <span>SYS // {notice}</span>
+              <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200 flex items-center justify-between gap-2">
+                <span>{notice}</span>
                 {probeData.mediaItem.deleteAfterAt && !probeData.mediaItem.pinned && (
                   <button
                     onClick={() => void handleTogglePin()}
-                    className="px-2.5 py-1 border border-emerald-400/50 hover:bg-emerald-500/20 text-emerald-100 shrink-0"
+                    className="px-3 py-1 rounded-full bg-emerald-400/20 hover:bg-emerald-400/30 text-emerald-100 shrink-0"
                   >
                     锁定保留
                   </button>
@@ -652,35 +630,33 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
               </div>
             )}
 
-            {/* Playback Console Panel */}
-            <div className="hud-panel p-5 space-y-5">
+            {/* Controls Card */}
+            <div className="cinema-surface rounded-3xl p-6 space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <h1 className="text-base sm:text-lg font-semibold text-white break-all">
-                    {parsed?.title || probeData.fileName}
+                  <h1 className="text-lg sm:text-xl font-semibold text-white break-all">
+                    {torrentName || parsed?.title || probeData.fileName}
                   </h1>
-                  <div className="text-[11px] font-mono text-zinc-500 mt-0.5 break-all">
-                    {probeData.fileName}
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap mt-3 text-[11px] font-mono">
-                    <span className="px-2 py-0.5 border border-white/10 bg-white/[0.03] text-zinc-200">
-                      {probeData.probe.width}x{probeData.probe.height}
+                  <div className="text-xs text-zinc-500 mt-1 break-all">{probeData.fileName}</div>
+                  <div className="flex items-center gap-2 flex-wrap mt-3 text-xs tabular-nums">
+                    <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-zinc-200">
+                      {probeData.probe.width} × {probeData.probe.height}
                     </span>
-                    <span className="px-2 py-0.5 border border-white/10 bg-white/[0.03] text-zinc-300 uppercase">
+                    <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-zinc-300 uppercase">
                       {probeData.probe.videoCodec || 'VIDEO'} · {probeData.probe.audioCodec || 'AUDIO'}
                     </span>
-                    <span className="px-2 py-0.5 border border-white/10 bg-white/[0.03] text-zinc-400">
+                    <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-zinc-400">
                       {formatBytes(probeData.sizeBytes)}
                     </span>
-                    <span className="px-2 py-0.5 border border-cyan-400/35 bg-cyan-400/10 text-cyan-300">
+                    <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-zinc-300">
                       建议带宽 ≥ {probeData.probe.requiredMbps} Mbps
                     </span>
                     {!probeData.probe.canDirectPlay && mode === 'direct' && !directPlaybackError && (
                       <button
                         onClick={() => switchToRemux(currentTime)}
-                        className="px-2 py-0.5 border border-amber-500/35 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition"
+                        className="px-2.5 py-0.5 rounded-full bg-amber-400/15 text-amber-200 hover:bg-amber-400/25 transition"
                       >
-                        原生直出中 · 若无声点此切 Remux
+                        若无声点此切 Remux
                       </button>
                     )}
                   </div>
@@ -689,10 +665,10 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
                   <button
                     onClick={() => void handleTogglePin()}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border transition ${
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs border transition ${
                       probeData.mediaItem.pinned
-                        ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-200'
-                        : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:text-white'
+                        ? 'bg-amber-400/15 border-amber-400/35 text-amber-200'
+                        : 'bg-white/[0.06] border-white/[0.08] text-zinc-200 hover:bg-white/[0.12]'
                     }`}
                   >
                     <Pin className="w-3.5 h-3.5" />
@@ -700,35 +676,31 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                   </button>
                   <button
                     onClick={() => void handleMarkWatched(false)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-white/10 bg-white/[0.03] hover:border-emerald-400/40 text-xs font-mono text-zinc-200 transition"
+                    className="btn-ghost px-3.5 py-1.5 text-xs"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                     标为已看
                   </button>
                   <button
                     onClick={() => void handleMarkWatched(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-rose-500/50 bg-rose-950/50 hover:bg-rose-600 text-xs font-mono text-rose-200 hover:text-white transition"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500 text-rose-200 hover:text-white transition"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                    立即卸载
+                    看完卸载
                   </button>
                 </div>
               </div>
 
-              {/* Stream, Speed, Audio & Subtitle Controls */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 pt-4 border-t border-white/[0.07]">
+              {/* Playback Controls Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pt-5 border-t border-white/[0.07]">
                 <div>
-                  <div className="text-[10px] font-mono tracking-[0.16em] text-zinc-500 mb-1.5">
-                    STREAM MODE / 输出
-                  </div>
-                  <div className="grid grid-cols-2 border border-white/10 bg-[#05070a]">
+                  <div className="text-xs text-zinc-400 mb-2">播放模式</div>
+                  <div className="grid grid-cols-2 p-1 rounded-full bg-white/[0.04] border border-white/[0.07]">
                     <button
                       type="button"
                       onClick={switchToDirect}
-                      className={`py-1.5 text-[11px] font-mono transition ${
-                        mode === 'direct'
-                          ? 'bg-cyan-400/15 text-cyan-300 border-b-2 border-cyan-400'
-                          : 'text-zinc-500 hover:text-zinc-200'
+                      className={`py-1.5 rounded-full text-xs font-medium transition ${
+                        mode === 'direct' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
                       }`}
                     >
                       原生直出
@@ -736,10 +708,8 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                     <button
                       type="button"
                       onClick={() => switchToRemux(currentTime)}
-                      className={`py-1.5 text-[11px] font-mono transition ${
-                        mode === 'remux'
-                          ? 'bg-cyan-400/15 text-cyan-300 border-b-2 border-cyan-400'
-                          : 'text-zinc-500 hover:text-zinc-200'
+                      className={`py-1.5 rounded-full text-xs font-medium transition ${
+                        mode === 'remux' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
                       }`}
                     >
                       无损 Remux
@@ -748,10 +718,8 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
 
                 <div>
-                  <div className="text-[10px] font-mono tracking-[0.16em] text-zinc-500 mb-1.5">
-                    SPEED / 倍速
-                  </div>
-                  <div className="grid grid-cols-5 border border-white/10 bg-[#05070a]">
+                  <div className="text-xs text-zinc-400 mb-2">倍速</div>
+                  <div className="grid grid-cols-5 p-1 rounded-full bg-white/[0.04] border border-white/[0.07]">
                     {SPEEDS.map((sp) => (
                       <button
                         key={sp}
@@ -760,10 +728,10 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                           setPlaybackRate(sp);
                           if (videoRef.current) videoRef.current.playbackRate = sp;
                         }}
-                        className={`py-1.5 text-[10px] font-mono transition ${
+                        className={`py-1.5 rounded-full text-[11px] tabular-nums transition ${
                           playbackRate === sp
-                            ? 'bg-cyan-400/20 text-cyan-300'
-                            : 'text-zinc-500 hover:text-zinc-200'
+                            ? 'bg-white text-zinc-950 font-medium'
+                            : 'text-zinc-400 hover:text-white'
                         }`}
                       >
                         {sp}x
@@ -773,9 +741,9 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-mono tracking-[0.16em] text-zinc-500 flex items-center gap-1 mb-1.5">
-                    <Volume2 className="w-3 h-3" />
-                    AUDIO / 音轨
+                  <label className="text-xs text-zinc-400 flex items-center gap-1 mb-2">
+                    <Volume2 className="w-3.5 h-3.5" />
+                    音轨
                   </label>
                   <select
                     value={audioTrack}
@@ -783,7 +751,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       setAudioTrack(Number(e.target.value));
                       if (mode !== 'remux') switchToRemux(currentTime);
                     }}
-                    className="w-full bg-[#05070a] border border-white/10 px-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-cyan-400/60"
+                    className="cinema-input w-full px-3 py-2 text-xs"
                   >
                     {probeData.probe.audioTracks.length === 0 ? (
                       <option value={0}>默认音轨</option>
@@ -798,19 +766,19 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between text-[10px] font-mono tracking-[0.16em] text-zinc-500 mb-1.5">
+                  <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
                     <span className="flex items-center gap-1">
-                      <Subtitles className="w-3 h-3" />
-                      SUBTITLES / 字幕
+                      <Subtitles className="w-3.5 h-3.5" />
+                      字幕
                     </span>
                     <button
                       type="button"
                       disabled={uploadingSub}
                       onClick={() => subInputRef.current?.click()}
-                      className="text-cyan-400 hover:text-cyan-300 inline-flex items-center gap-0.5"
+                      className="text-zinc-200 hover:text-white inline-flex items-center gap-1"
                     >
-                      <Upload className="w-2.5 h-2.5" />
-                      {uploadingSub ? '转换中' : '上传'}
+                      <Upload className="w-3 h-3" />
+                      {uploadingSub ? '转换中' : '上传字幕'}
                     </button>
                     <input
                       ref={subInputRef}
@@ -830,7 +798,7 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                       setSelectedSubId(e.target.value);
                       setSubOffsetSec(0);
                     }}
-                    className="w-full bg-[#05070a] border border-white/10 px-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-cyan-400/60"
+                    className="cinema-input w-full px-3 py-2 text-xs"
                   >
                     <option value="">关闭字幕</option>
                     {probeData.probe.subtitles.map((s) => (
@@ -840,27 +808,27 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                     ))}
                   </select>
                   {selectedSubId && (
-                    <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono text-zinc-400">
-                      <span>时间偏移：{subOffsetSec >= 0 ? `+${subOffsetSec}s` : `${subOffsetSec}s`}</span>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400 tabular-nums">
+                      <span>偏移 {subOffsetSec >= 0 ? `+${subOffsetSec}s` : `${subOffsetSec}s`}</span>
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
                           onClick={() => setSubOffsetSec((o) => Number((o - 0.5).toFixed(1)))}
-                          className="px-1.5 border border-white/10 hover:border-cyan-400/50"
+                          className="px-2 py-0.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200"
                         >
                           -0.5s
                         </button>
                         <button
                           type="button"
                           onClick={() => setSubOffsetSec(0)}
-                          className="px-1.5 border border-white/10 hover:border-cyan-400/50"
+                          className="px-2 py-0.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200"
                         >
-                          0
+                          重置
                         </button>
                         <button
                           type="button"
                           onClick={() => setSubOffsetSec((o) => Number((o + 0.5).toFixed(1)))}
-                          className="px-1.5 border border-white/10 hover:border-cyan-400/50"
+                          className="px-2 py-0.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200"
                         >
                           +0.5s
                         </button>
@@ -870,57 +838,28 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
                 </div>
               </div>
 
-              {/* External Local Players Dock (Desktop + Mobile) */}
-              <div className="pt-4 border-t border-white/[0.07]">
-                <div className="text-[10px] font-mono tracking-[0.16em] text-zinc-500 mb-2">
-                  EXTERNAL DECK // 桌面与移动端本地硬解播放器（支持 HDR / 杜比 / 特效字幕 & 多线程缓冲）
+              {/* External Players */}
+              <div className="pt-5 border-t border-white/[0.07] space-y-2.5">
+                <div className="text-xs text-zinc-400">
+                  调用本地播放器（支持 HDR / 杜比视界 / 特效字幕与多线程缓冲）
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <a
-                    href={probeData.urls.potplayer}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-amber-500/35 bg-amber-500/10 hover:bg-amber-500/20 text-xs font-mono text-amber-200 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    PotPlayer
-                  </a>
-                  <a
-                    href={probeData.urls.iina}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-cyan-500/35 bg-cyan-500/10 hover:bg-cyan-500/20 text-xs font-mono text-cyan-200 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    IINA
-                  </a>
-                  <a
-                    href={probeData.urls.mpv}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-emerald-500/35 bg-emerald-500/10 hover:bg-emerald-500/20 text-xs font-mono text-emerald-200 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    MPV
-                  </a>
-                  <a
-                    href={probeData.urls.infuse}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-orange-500/35 bg-orange-500/10 hover:bg-orange-500/20 text-xs font-mono text-orange-200 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    Infuse (iOS/macOS)
-                  </a>
-                  <a
-                    href={probeData.urls.vlc}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-white/15 bg-white/[0.03] hover:border-white/30 text-xs font-mono text-zinc-200 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    VLC
-                  </a>
-                  <a
-                    href={probeData.urls.nplayer}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-white/15 bg-white/[0.03] hover:border-white/30 text-xs font-mono text-zinc-200 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    nPlayer
-                  </a>
+                  {[
+                    { label: 'PotPlayer', href: probeData.urls.potplayer },
+                    { label: 'IINA', href: probeData.urls.iina },
+                    { label: 'MPV', href: probeData.urls.mpv },
+                    { label: 'Infuse', href: probeData.urls.infuse },
+                    { label: 'VLC', href: probeData.urls.vlc },
+                    { label: 'nPlayer', href: probeData.urls.nplayer },
+                  ].map((p) => (
+                    <a key={p.label} href={p.href} className="btn-ghost px-3.5 py-1.5 text-xs">
+                      <ExternalLink className="w-3 h-3" />
+                      {p.label}
+                    </a>
+                  ))}
                   <button
                     onClick={() => void handleCopyDirectUrl()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-cyan-400/35 bg-cyan-950/30 hover:border-cyan-400 text-xs font-mono text-cyan-200 transition"
+                    className="btn-ghost px-3.5 py-1.5 text-xs"
                   >
                     {copied ? (
                       <>
@@ -939,58 +878,68 @@ export const PlayerPage: React.FC<PlayerPageProps> = ({
             </div>
           </div>
 
-          {/* Right Episode Rail */}
-          <div className="hud-panel p-4 h-fit max-h-[720px] flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-white/[0.07]">
-              <span className="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider text-white">
-                <Film className="w-3.5 h-3.5 text-cyan-400" />
-                PLAYLIST
-              </span>
-              <span className="text-[10px] font-mono text-zinc-500">{episodes.length} ITEMS</span>
-            </div>
+          {/* Episode Sidebar (shown only for multi-episode packs) */}
+          {episodes.length > 1 && (
+            <div className="cinema-surface rounded-3xl p-4 h-fit max-h-[720px] flex flex-col">
+              <div className="flex items-center justify-between pb-3 border-b border-white/[0.07] px-1">
+                <span className="flex items-center gap-2 text-sm font-medium text-white">
+                  <Film className="w-4 h-4 text-zinc-400" />
+                  剧集列表
+                </span>
+                <span className="text-xs text-zinc-500">{episodes.length} 集</span>
+              </div>
 
-            <div className="mt-2.5 space-y-1.5 overflow-y-auto pr-1">
-              {episodes.map((ep, i) => {
-                const active = ep.index === fileIndex;
-                const shortName = ep.name.split('/').pop() || ep.name;
-                return (
-                  <button
-                    key={ep.index}
-                    disabled={!ep.existsOnDisk}
-                    onClick={() => onSelectEpisode(ep.index)}
-                    className={`w-full text-left p-2.5 border text-xs transition ${
-                      active
-                        ? 'bg-cyan-400/15 border-cyan-400/60 text-white'
-                        : ep.existsOnDisk
-                        ? 'bg-[#06090e] border-white/[0.07] text-zinc-300 hover:border-white/25'
-                        : 'bg-[#05070a] border-white/[0.04] text-zinc-600 cursor-not-allowed'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-mono text-zinc-500 shrink-0">
-                        {String(i + 1).padStart(2, '0')}
-                      </span>
-                      <span className="font-medium truncate" title={shortName}>
-                        {shortName}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 mt-1 pl-5">
-                      <span>{formatBytes(ep.size)}</span>
-                      <span className={ep.media?.watchedAt ? 'text-emerald-400' : ''}>
-                        {ep.media?.watchedAt
-                          ? 'WATCHED'
+              <div className="mt-3 space-y-1.5 overflow-y-auto pr-1">
+                {episodes.map((ep, i) => {
+                  const active = ep.index === fileIndex;
+                  const shortName = ep.name.split('/').pop() || ep.name;
+                  return (
+                    <button
+                      key={ep.index}
+                      disabled={!ep.existsOnDisk}
+                      onClick={() => onSelectEpisode(ep.index)}
+                      className={`w-full text-left p-3 rounded-2xl border text-xs transition ${
+                        active
+                          ? 'bg-white text-zinc-950 border-white font-medium'
                           : ep.existsOnDisk
-                          ? `${Math.round(ep.progress * 100)}%`
-                          : ep.priority > 0
-                          ? 'SYNCING'
-                          : 'STANDBY'}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
+                            ? 'bg-white/[0.03] border-white/[0.06] text-zinc-200 hover:bg-white/[0.08]'
+                            : 'bg-white/[0.01] border-transparent text-zinc-600 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-[11px] tabular-nums shrink-0 ${
+                            active ? 'text-zinc-600' : 'text-zinc-500'
+                          }`}
+                        >
+                          {String(i + 1).padStart(2, '0')}
+                        </span>
+                        <span className="truncate" title={shortName}>
+                          {shortName}
+                        </span>
+                      </div>
+                      <div
+                        className={`flex items-center justify-between text-[11px] mt-1 pl-6 tabular-nums ${
+                          active ? 'text-zinc-700' : 'text-zinc-500'
+                        }`}
+                      >
+                        <span>{formatBytes(ep.size)}</span>
+                        <span>
+                          {ep.media?.watchedAt
+                            ? '已看'
+                            : ep.existsOnDisk
+                              ? `${Math.round(ep.progress * 100)}%`
+                              : ep.priority > 0
+                                ? '下载中'
+                                : '未下载'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       ) : null}
     </div>

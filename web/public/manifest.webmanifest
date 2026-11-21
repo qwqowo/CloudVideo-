@@ -1,11 +1,11 @@
 {
-  "name": "CloudVideo — Orbital Media Deck",
+  "name": "CloudVideo · 私人云端影院",
   "short_name": "CloudVideo",
-  "description": "小盘云端种子影院 · 边下边播 · 自动卸载",
+  "description": "私人云端影院：在线搜片、自动追更、原生直出与智能空间清理",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#050709",
-  "theme_color": "#050709",
+  "background_color": "#09090B",
+  "theme_color": "#09090B",
   "icons": [
     {
       "src": "/icon.svg",

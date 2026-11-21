@@ -1,14 +1,20 @@
 import React, { useState } from 'react';
-import { X, Link2, Upload, Zap, PauseCircle, Repeat } from 'lucide-react';
+import { X, Link2, Upload, Zap, PauseCircle, Repeat, Compass } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 
 interface AddTorrentModalProps {
   open: boolean;
   onClose: () => void;
   onAdded: (warning?: string) => void;
+  onGoDiscover?: () => void;
 }
 
-export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose, onAdded }) => {
+export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({
+  open,
+  onClose,
+  onAdded,
+  onGoDiscover,
+}) => {
   const [mode, setMode] = useState<'magnet' | 'file'>('magnet');
   const [magnet, setMagnet] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -69,196 +75,243 @@ export const AddTorrentModal: React.FC<AddTorrentModalProps> = ({ open, onClose,
         onClose();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '添加任务失败');
+      setError(err instanceof Error ? err.message : '添加失败，请检查链接');
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
-      <div className="w-full max-w-lg hud-panel shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.08]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md px-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg cinema-glass rounded-3xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-5 border-b border-white/[0.07]">
           <div>
-            <div className="text-[10px] font-mono tracking-[0.2em] text-cyan-400">
-              INGEST // TORRENT
-            </div>
-            <h2 className="text-sm font-semibold text-white mt-0.5">载入云端下载任务</h2>
+            <h2 className="text-base font-semibold text-white">添加云端片源</h2>
+            <p className="text-xs text-zinc-400 mt-0.5">支持磁力链接或本地 .torrent 文件</p>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-zinc-400 hover:text-white border border-transparent hover:border-white/10"
+            className="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/[0.08] transition"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div className="grid grid-cols-2 border border-white/10 bg-[#05070a]">
+          {/* Segmented Switch */}
+          <div className="grid grid-cols-2 p-1 rounded-full bg-white/[0.04] border border-white/[0.07]">
             <button
               type="button"
               onClick={() => setMode('magnet')}
-              className={`flex items-center justify-center gap-2 py-2.5 text-xs font-mono tracking-wider transition ${
+              className={`flex items-center justify-center gap-2 py-2 rounded-full text-xs font-medium transition ${
                 mode === 'magnet'
-                  ? 'bg-cyan-400/15 text-cyan-300 border-b-2 border-cyan-400'
-                  : 'text-zinc-500 hover:text-zinc-200'
+                  ? 'bg-white text-zinc-950 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
             >
               <Link2 className="w-3.5 h-3.5" />
-              MAGNET 磁力
+              磁力链接
             </button>
             <button
               type="button"
               onClick={() => setMode('file')}
-              className={`flex items-center justify-center gap-2 py-2.5 text-xs font-mono tracking-wider transition ${
+              className={`flex items-center justify-center gap-2 py-2 rounded-full text-xs font-medium transition ${
                 mode === 'file'
-                  ? 'bg-cyan-400/15 text-cyan-300 border-b-2 border-cyan-400'
-                  : 'text-zinc-500 hover:text-zinc-200'
+                  ? 'bg-white text-zinc-950 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
             >
               <Upload className="w-3.5 h-3.5" />
-              .TORRENT 文件
+              上传 .torrent
             </button>
           </div>
 
           {mode === 'magnet' ? (
-            <div>
-              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
-                MAGNET URI / HTTP LINK
-              </label>
-              <textarea
-                rows={3}
-                value={magnet}
-                onChange={(e) => setMagnet(e.target.value)}
-                placeholder="magnet:?xt=urn:btih:..."
-                className="w-full bg-[#05070a] border border-white/10 px-3.5 py-2.5 text-xs font-mono text-white placeholder-zinc-600 focus:outline-none focus:border-cyan-400/70"
-              />
-            </div>
+            <textarea
+              rows={3}
+              value={magnet}
+              onChange={(e) => setMagnet(e.target.value)}
+              placeholder="粘贴 magnet:?xt=urn:btih:... 或下载链接"
+              className="cinema-input w-full px-4 py-3 text-xs font-mono resize-none"
+            />
           ) : (
-            <div>
-              <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
-                TORRENT PAYLOAD
-              </label>
-              <label className="flex flex-col items-center justify-center gap-2 border border-dashed border-white/15 hover:border-cyan-400/60 bg-[#05070a] p-7 cursor-pointer transition">
-                <Upload className="w-5 h-5 text-cyan-400" />
-                <span className="text-xs font-mono text-zinc-300">
-                  {file ? file.name : '点击选择或拖拽 .torrent 文件'}
-                </span>
-                <input
-                  type="file"
-                  accept=".torrent"
-                  className="hidden"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
-                />
-              </label>
-            </div>
+            <label className="flex flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed border-white/15 hover:border-white/35 bg-white/[0.02] p-8 cursor-pointer transition">
+              <div className="w-10 h-10 rounded-full bg-white/[0.07] flex items-center justify-center text-zinc-200">
+                <Upload className="w-4 h-4" />
+              </div>
+              <span className="text-xs text-zinc-300">
+                {file ? file.name : '点击选择或拖入 .torrent 文件'}
+              </span>
+              <input
+                type="file"
+                accept=".torrent"
+                className="hidden"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+            </label>
           )}
 
-          <div className="space-y-3 border border-white/[0.08] bg-[#06090e] p-4">
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={sequential}
-                onChange={(e) => setSequential(e.target.checked)}
-                className="mt-0.5 accent-cyan-400"
-              />
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
-                  <Zap className="w-3.5 h-3.5 text-amber-400" />
-                  顺序下载 + 首尾分片优先（边下边播）
-                </div>
-                <p className="text-[11px] text-zinc-500 mt-0.5">
-                  优先拉取头尾索引与前段画面，缓冲数秒即可直接原生直出播放。
-                </p>
-              </div>
-            </label>
-
-            <div className="pt-3 border-t border-white/[0.06]">
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={bingeMode}
-                  onChange={(e) => {
-                    setBingeMode(e.target.checked);
-                    if (e.target.checked) setPaused(false);
-                  }}
-                  className="mt-0.5 accent-cyan-400"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-1.5 text-xs font-semibold text-cyan-200">
-                      <Repeat className="w-3.5 h-3.5 text-cyan-400" />
-                      小盘追剧托管（自动仅下前 N 集 + 播到 70% 预载下集）
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 mt-0.5">
-                    80GB+ 整季剧集神器：元数据就绪后自动只勾前几集，看完自动卸载，50GB 小盘丝滑追完全季。
+          {/* Smart Options */}
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              onClick={() => setSequential((v) => !v)}
+              className={`w-full text-left p-3.5 rounded-2xl border transition flex items-start justify-between gap-3 ${
+                sequential
+                  ? 'bg-white/[0.06] border-white/20'
+                  : 'bg-white/[0.02] border-white/[0.06] opacity-75'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <Zap className={`w-4 h-4 mt-0.5 shrink-0 ${sequential ? 'text-amber-400' : 'text-zinc-500'}`} />
+                <div>
+                  <div className="text-xs font-medium text-white">边下边播（顺序下载）</div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    优先拉取片头片尾索引，缓冲几秒即可直接开播
                   </p>
-                  {bingeMode && (
-                    <div className="mt-2 flex items-center gap-2 text-[11px] font-mono text-zinc-300">
-                      <span>初始预载集数：</span>
-                      {[1, 2, 3].map((n) => (
-                        <button
-                          key={n}
-                          type="button"
-                          onClick={() => setBingeWindow(n)}
-                          className={`px-2 py-0.5 border ${
-                            bingeWindow === n
-                              ? 'border-cyan-400 bg-cyan-400/20 text-cyan-200'
-                              : 'border-white/10 text-zinc-400'
-                          }`}
-                        >
-                          前 {n} 集
-                        </button>
-                      ))}
-                    </div>
-                  )}
                 </div>
-              </label>
+              </div>
+              <span
+                className={`mt-0.5 w-9 h-5 rounded-full transition flex items-center px-0.5 shrink-0 ${
+                  sequential ? 'bg-white justify-end' : 'bg-zinc-700 justify-start'
+                }`}
+              >
+                <span className={`w-4 h-4 rounded-full ${sequential ? 'bg-zinc-950' : 'bg-zinc-400'}`} />
+              </span>
+            </button>
+
+            <div
+              className={`p-3.5 rounded-2xl border transition ${
+                bingeMode
+                  ? 'bg-amber-500/10 border-amber-400/30'
+                  : 'bg-white/[0.02] border-white/[0.06]'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !bingeMode;
+                  setBingeMode(next);
+                  if (next) setPaused(false);
+                }}
+                className="w-full text-left flex items-start justify-between gap-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Repeat className={`w-4 h-4 mt-0.5 shrink-0 ${bingeMode ? 'text-amber-400' : 'text-zinc-500'}`} />
+                  <div>
+                    <div className="text-xs font-medium text-white">整季追剧托管</div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      只下前几集，看到 70% 自动预载下集，省硬盘追完大合集
+                    </p>
+                  </div>
+                </div>
+                <span
+                  className={`mt-0.5 w-9 h-5 rounded-full transition flex items-center px-0.5 shrink-0 ${
+                    bingeMode ? 'bg-amber-400 justify-end' : 'bg-zinc-700 justify-start'
+                  }`}
+                >
+                  <span className={`w-4 h-4 rounded-full ${bingeMode ? 'bg-zinc-950' : 'bg-zinc-400'}`} />
+                </span>
+              </button>
+
+              {bingeMode && (
+                <div className="mt-3 pt-3 border-t border-white/[0.08] flex items-center justify-between text-xs">
+                  <span className="text-zinc-300">初始预载集数</span>
+                  <div className="flex items-center gap-1.5">
+                    {[1, 2, 3].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setBingeWindow(n)}
+                        className={`px-3 py-1 rounded-full text-xs transition ${
+                          bingeWindow === n
+                            ? 'bg-amber-400 text-zinc-950 font-medium'
+                            : 'bg-white/[0.07] text-zinc-300 hover:bg-white/[0.12]'
+                        }`}
+                      >
+                        前 {n} 集
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {!bingeMode && (
-              <label className="flex items-start gap-3 cursor-pointer pt-3 border-t border-white/[0.06]">
-                <input
-                  type="checkbox"
-                  checked={paused}
-                  onChange={(e) => setPaused(e.target.checked)}
-                  className="mt-0.5 accent-cyan-400"
-                />
-                <div>
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
-                    <PauseCircle className="w-3.5 h-3.5 text-zinc-400" />
-                    先暂停载入（手动进抽屉选集）
+              <button
+                type="button"
+                onClick={() => setPaused((v) => !v)}
+                className={`w-full text-left p-3.5 rounded-2xl border transition flex items-start justify-between gap-3 ${
+                  paused
+                    ? 'bg-white/[0.06] border-white/20'
+                    : 'bg-white/[0.02] border-white/[0.06] opacity-75'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <PauseCircle className="w-4 h-4 mt-0.5 shrink-0 text-zinc-400" />
+                  <div>
+                    <div className="text-xs font-medium text-white">先暂停载入（稍后手动选集）</div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      添加后进入影片详情自行勾选想看的单集
+                    </p>
                   </div>
-                  <p className="text-[11px] text-zinc-500 mt-0.5">
-                    若想手动挑选特定某几集，可先暂停添加。
-                  </p>
                 </div>
-              </label>
+                <span
+                  className={`mt-0.5 w-9 h-5 rounded-full transition flex items-center px-0.5 shrink-0 ${
+                    paused ? 'bg-white justify-end' : 'bg-zinc-700 justify-start'
+                  }`}
+                >
+                  <span className={`w-4 h-4 rounded-full ${paused ? 'bg-zinc-950' : 'bg-zinc-400'}`} />
+                </span>
+              </button>
             )}
           </div>
 
           {error && (
-            <div className="border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-xs font-mono text-rose-300">
-              ERR // {error}
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-200">
+              {error}
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2.5 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 border border-white/10 text-xs font-mono text-zinc-400 hover:text-white hover:border-white/25 transition"
-            >
-              CANCEL
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-5 py-2 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-xs font-mono font-bold tracking-wider text-zinc-950 transition"
-            >
-              {submitting ? 'DISPATCHING...' : 'START INGEST'}
-            </button>
+          <div className="flex items-center justify-between gap-3 pt-1">
+            {onGoDiscover ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onGoDiscover();
+                }}
+                className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition"
+              >
+                <Compass className="w-3.5 h-3.5" />
+                没有链接？去在线搜片
+              </button>
+            ) : (
+              <span />
+            )}
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="btn-ghost px-4 py-2 text-xs"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="btn-ivory px-5 py-2 text-xs"
+              >
+                {submitting ? '正在添加...' : '开始下载'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

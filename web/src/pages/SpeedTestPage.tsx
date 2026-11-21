@@ -178,18 +178,13 @@ export const SpeedTestPage: React.FC = () => {
     .join(' ');
 
   return (
-    <div className="space-y-5">
-      <div className="hud-panel p-5 sm:p-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-white/[0.07]">
+    <div className="space-y-6">
+      <div className="cinema-surface rounded-3xl p-6 space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="text-[10px] font-mono tracking-[0.22em] text-cyan-400">
-              TELEMETRY // LINK BENCHMARK
-            </div>
-            <h1 className="text-base sm:text-lg font-semibold text-white mt-0.5">
-              节点带宽与 1080P / 4K 流畅度诊断
-            </h1>
+            <h2 className="text-base font-semibold text-white">观影链路测速与清晰度诊断</h2>
             <p className="text-xs text-zinc-400 mt-1">
-              纯内存不可压缩随机流直出，实测「服务器 ↔ 当前节点」单线程（网页原生直出）与 4 线程（本地播放器缓冲）吞吐。
+              纯内存不可压缩随机流实测，验证当前网络节点能否流畅播放 1080P / 4K 原盘。
             </p>
           </div>
 
@@ -198,15 +193,15 @@ export const SpeedTestPage: React.FC = () => {
               type="text"
               value={nodeNote}
               onChange={(e) => setNodeNote(e.target.value)}
-              placeholder="节点备注 (如 香港CN2 / 直连)"
+              placeholder="备注节点（如 香港CN2）"
               disabled={running}
-              className="bg-[#05070a] border border-white/10 px-3 py-2 text-xs font-mono text-white placeholder-zinc-600 w-48 focus:outline-none focus:border-cyan-400/60"
+              className="cinema-input px-3.5 py-2 text-xs w-44"
             />
             <select
               value={singleMb}
               onChange={(e) => setSingleMb(Number(e.target.value))}
               disabled={running}
-              className="bg-[#05070a] border border-white/10 px-3 py-2 text-xs font-mono text-zinc-200"
+              className="cinema-input px-3 py-2 text-xs"
             >
               <option value={15}>15 MB 轻测</option>
               <option value={25}>25 MB 标准</option>
@@ -215,80 +210,82 @@ export const SpeedTestPage: React.FC = () => {
             <button
               onClick={() => void runTest()}
               disabled={running}
-              className="flex items-center gap-1.5 px-5 py-2 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-xs font-mono font-bold tracking-wider text-zinc-950 transition"
+              className="btn-ivory px-5 py-2 text-xs"
             >
               <Play className="w-3.5 h-3.5 fill-current" />
-              {running ? 'TESTING...' : 'START TEST'}
+              {running ? '测速中...' : '开始测速'}
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="mt-4 border border-rose-500/40 bg-rose-950/40 px-4 py-2 text-xs font-mono text-rose-300">
-            ERR // {error}
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200">
+            {error}
           </div>
         )}
 
         {/* Metrics Readout */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5">
-          <div className="border border-white/[0.08] bg-[#06090e] p-4">
-            <div className="text-[10px] font-mono tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] p-5">
+            <div className="text-xs text-zinc-400 flex items-center gap-1.5">
               <Wifi className="w-3.5 h-3.5 text-amber-400" />
-              LATENCY // RTT
+              往返延迟
             </div>
-            <div className="text-2xl font-mono font-bold text-white mt-2">
-              {pingMs > 0 ? `${pingMs} ms` : stage === 'ping' ? 'PINGING...' : '--'}
+            <div className="text-3xl font-semibold text-white mt-2 tabular-nums">
+              {pingMs > 0 ? `${pingMs} ms` : stage === 'ping' ? '测延迟...' : '--'}
+            </div>
+            <div className="text-[11px] text-zinc-500 mt-1">影响起播与拖动响应</div>
+          </div>
+
+          <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] p-5">
+            <div className="text-xs text-zinc-400 flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-white" />
+              单线程吞吐（网页直出）
+            </div>
+            <div className="text-3xl font-semibold text-white mt-2 tabular-nums">
+              {singleMbps > 0 ? `${singleMbps} Mbps` : stage === 'single' ? '采样中...' : '--'}
+            </div>
+            <div className="text-[11px] text-zinc-500 mt-1 tabular-nums">
+              {singleMbps > 0 ? `约 ${(singleMbps / 8).toFixed(2)} MB/s` : '浏览器播放的核心参考'}
             </div>
           </div>
 
-          <div className="border border-white/[0.08] bg-[#06090e] p-4">
-            <div className="text-[10px] font-mono tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
-              <Activity className="w-3.5 h-3.5 text-cyan-400" />
-              1-THREAD // WEB DIRECT
-            </div>
-            <div className="text-2xl font-mono font-bold text-cyan-300 mt-2">
-              {singleMbps > 0 ? `${singleMbps} Mbps` : stage === 'single' ? 'SAMPLING...' : '--'}
-            </div>
-            <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
-              {singleMbps > 0 ? `≈ ${(singleMbps / 8).toFixed(2)} MB/s` : '网页原生直出核心指标'}
-            </div>
-          </div>
-
-          <div className="border border-white/[0.08] bg-[#06090e] p-4">
-            <div className="text-[10px] font-mono tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+          <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] p-5">
+            <div className="text-xs text-zinc-400 flex items-center gap-1.5">
               <Gauge className="w-3.5 h-3.5 text-emerald-400" />
-              4-THREAD // PLAYER BURST
+              4 线程并发（本地播放器）
             </div>
-            <div className="text-2xl font-mono font-bold text-emerald-300 mt-2">
-              {multiMbps > 0 ? `${multiMbps} Mbps` : stage === 'multi' ? 'SAMPLING...' : '--'}
+            <div className="text-3xl font-semibold text-emerald-300 mt-2 tabular-nums">
+              {multiMbps > 0 ? `${multiMbps} Mbps` : stage === 'multi' ? '采样中...' : '--'}
             </div>
-            <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
-              {multiMbps > 0 ? `≈ ${(multiMbps / 8).toFixed(2)} MB/s` : 'PotPlayer / MPV / Infuse 上限'}
+            <div className="text-[11px] text-zinc-500 mt-1 tabular-nums">
+              {multiMbps > 0 ? `约 ${(multiMbps / 8).toFixed(2)} MB/s` : 'Infuse / PotPlayer 缓冲上限'}
             </div>
           </div>
         </div>
 
-        {/* Oscilloscope Waveform */}
+        {/* Smooth Speed Curve */}
         {samples.length > 1 && (
-          <div className="mt-5 border border-white/[0.08] bg-[#05080c] sci-grid-bg p-4">
-            <div className="flex items-center justify-between text-[10px] font-mono tracking-wider text-zinc-400 mb-2">
-              <span>SIGNAL TRACE // 1-THREAD STABILITY</span>
-              <span className="text-cyan-300">PEAK {maxSampleMbps.toFixed(1)} Mbps</span>
+          <div className="rounded-2xl bg-[#0c0c10] border border-white/[0.06] p-5">
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-3">
+              <span>单线程速率波动曲线</span>
+              <span className="text-white tabular-nums">峰值 {maxSampleMbps.toFixed(1)} Mbps</span>
             </div>
             <svg viewBox="0 0 600 145" className="w-full h-36 overflow-visible">
               <defs>
-                <linearGradient id="cyanTrace" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.35" />
-                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.01" />
+                <linearGradient id="velvetCurve" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#ffffff" stopOpacity="0.28" />
+                  <stop offset="100%" stopColor="#ffffff" stopOpacity="0.01" />
                 </linearGradient>
               </defs>
-              <line x1="0" y1="35" x2="600" y2="35" stroke="rgba(255,255,255,0.06)" strokeDasharray="3 3" />
-              <line x1="0" y1="85" x2="600" y2="85" stroke="rgba(255,255,255,0.06)" strokeDasharray="3 3" />
-              <polygon fill="url(#cyanTrace)" points={`0,140 ${chartPoints} 600,140`} />
+              <line x1="0" y1="45" x2="600" y2="45" stroke="rgba(255,255,255,0.05)" strokeDasharray="4 4" />
+              <line x1="0" y1="95" x2="600" y2="95" stroke="rgba(255,255,255,0.05)" strokeDasharray="4 4" />
+              <polygon fill="url(#velvetCurve)" points={`0,140 ${chartPoints} 600,140`} />
               <polyline
                 fill="none"
-                stroke="#22d3ee"
+                stroke="#ffffff"
                 strokeWidth="2"
+                strokeLinecap="round"
                 strokeLinejoin="round"
                 points={chartPoints}
               />
@@ -296,35 +293,32 @@ export const SpeedTestPage: React.FC = () => {
           </div>
         )}
 
-        {/* Verdict Matrix */}
+        {/* Verdict */}
         {verdict && (
-          <div className="mt-5 border border-cyan-400/35 bg-cyan-950/20 p-4 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="text-xs sm:text-sm font-mono font-bold text-cyan-200">
-                {verdict.rating}
-              </div>
-              <div className="text-xs text-zinc-300">{verdict.summary}</div>
+          <div className="rounded-2xl bg-white/[0.04] border border-white/[0.1] p-5 space-y-3.5">
+            <div>
+              <div className="text-sm font-semibold text-white">{verdict.rating}</div>
+              <div className="text-xs text-zinc-400 mt-0.5">{verdict.summary}</div>
             </div>
-
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               {[
-                { label: '1080P WEB (4–10M)', ok: verdict.tiers.p1080Web },
-                { label: '1080P REMUX (30M)', ok: verdict.tiers.p1080Remux },
-                { label: '4K WEB-DL (25M)', ok: verdict.tiers.p4kWeb },
-                { label: '4K REMUX (75M+)', ok: verdict.tiers.p4kRemux },
+                { label: '1080P 流媒体', ok: verdict.tiers.p1080Web },
+                { label: '1080P 原盘 Remux', ok: verdict.tiers.p1080Remux },
+                { label: '4K 流媒体', ok: verdict.tiers.p4kWeb },
+                { label: '4K 原盘 Remux', ok: verdict.tiers.p4kRemux },
               ].map((t) => (
                 <div
                   key={t.label}
-                  className={`flex items-center gap-2 px-3 py-2 border text-[11px] font-mono ${
+                  className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl border text-xs ${
                     t.ok
-                      ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
-                      : 'bg-[#06090e] border-white/[0.07] text-zinc-500'
+                      ? 'bg-emerald-500/10 border-emerald-400/30 text-emerald-200'
+                      : 'bg-white/[0.02] border-white/[0.06] text-zinc-500'
                   }`}
                 >
                   {t.ok ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                   ) : (
-                    <XCircle className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                    <XCircle className="w-4 h-4 text-zinc-600 shrink-0" />
                   )}
                   <span>{t.label}</span>
                 </div>
@@ -334,48 +328,44 @@ export const SpeedTestPage: React.FC = () => {
         )}
       </div>
 
-      {/* History Log */}
-      <div className="hud-panel p-5">
-        <div className="text-[10px] font-mono tracking-[0.2em] text-zinc-500 mb-3">
-          LOG // HISTORICAL NODE BENCHMARKS
-        </div>
+      {/* Benchmark History */}
+      <div className="cinema-surface rounded-3xl p-6 space-y-4">
+        <div className="text-sm font-semibold text-white">历史节点测速记录</div>
         {history.length === 0 ? (
-          <div className="text-xs font-mono text-zinc-600 py-6 text-center">
-            NO RECORDS YET
-          </div>
+          <div className="text-xs text-zinc-500 py-6 text-center">暂无历史测速记录</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
-              <thead className="text-[10px] text-zinc-500 border-b border-white/[0.08]">
+            <table className="w-full text-left text-xs">
+              <thead className="text-zinc-500 border-b border-white/[0.07]">
                 <tr>
-                  <th className="py-2 pr-3">TIMESTAMP</th>
-                  <th className="py-2 pr-3">NODE</th>
-                  <th className="py-2 pr-3">RTT</th>
-                  <th className="py-2 pr-3">1-THREAD</th>
-                  <th className="py-2 pr-3">4-THREAD</th>
-                  <th className="py-2 pr-3">CLASS</th>
-                  <th className="py-2 text-right">DEL</th>
+                  <th className="py-2.5 pr-3 font-normal">时间</th>
+                  <th className="py-2.5 pr-3 font-normal">节点备注</th>
+                  <th className="py-2.5 pr-3 font-normal">延迟</th>
+                  <th className="py-2.5 pr-3 font-normal">单线程</th>
+                  <th className="py-2.5 pr-3 font-normal">4 线程</th>
+                  <th className="py-2.5 pr-3 font-normal">评估</th>
+                  <th className="py-2.5 text-right font-normal">删除</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.05] text-zinc-200">
+              <tbody className="divide-y divide-white/[0.05] text-zinc-200 tabular-nums">
                 {history.map((r) => (
                   <tr key={r.id} className="hover:bg-white/[0.02]">
-                    <td className="py-2.5 pr-3 text-zinc-500 whitespace-nowrap">
+                    <td className="py-3 pr-3 text-zinc-400 whitespace-nowrap">
                       {new Date(r.createdAt).toLocaleString()}
                     </td>
-                    <td className="py-2.5 pr-3">{r.note || '--'}</td>
-                    <td className="py-2.5 pr-3">{r.pingMs} ms</td>
-                    <td className="py-2.5 pr-3 text-cyan-300">
+                    <td className="py-3 pr-3 font-medium">{r.note || '--'}</td>
+                    <td className="py-3 pr-3">{r.pingMs} ms</td>
+                    <td className="py-3 pr-3 text-white">
                       {r.singleThreadMbps} Mbps ({(r.singleThreadMbps / 8).toFixed(1)} MB/s)
                     </td>
-                    <td className="py-2.5 pr-3 text-emerald-300">
+                    <td className="py-3 pr-3 text-emerald-300">
                       {r.multiThreadMbps} Mbps ({(r.multiThreadMbps / 8).toFixed(1)} MB/s)
                     </td>
-                    <td className="py-2.5 pr-3 text-zinc-300">{r.rating}</td>
-                    <td className="py-2.5 text-right">
+                    <td className="py-3 pr-3 text-zinc-300">{r.rating}</td>
+                    <td className="py-3 text-right">
                       <button
                         onClick={() => void handleDeleteRecord(r.id)}
-                        className="p-1 text-zinc-600 hover:text-rose-400"
+                        className="p-1.5 rounded-full text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

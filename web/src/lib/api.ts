@@ -135,64 +135,64 @@ export function translateTorrentState(state: string): {
   if (s.includes('downloading') || s === 'forceddl') {
     return {
       label: '下载中',
-      code: 'SYNCING',
-      dot: 'bg-cyan-400 animate-pulse',
-      badge: 'text-cyan-300 bg-cyan-950/80 border-cyan-500/40',
+      code: '下载中',
+      dot: 'bg-amber-400 animate-pulse',
+      badge: 'text-amber-200 bg-amber-500/15 border-amber-400/30',
     };
   }
   if (s === 'metadl') {
     return {
-      label: '解析元数据',
-      code: 'META',
-      dot: 'bg-amber-400 animate-pulse',
-      badge: 'text-amber-300 bg-amber-950/80 border-amber-500/40',
+      label: '解析中',
+      code: '解析中',
+      dot: 'bg-amber-300 animate-pulse',
+      badge: 'text-amber-200 bg-amber-500/15 border-amber-400/30',
     };
   }
   if (s === 'stalleddl') {
     return {
-      label: '等待节点',
-      code: 'STALLED',
-      dot: 'bg-amber-400',
-      badge: 'text-amber-300 bg-amber-950/80 border-amber-500/40',
+      label: '等待连接',
+      code: '等待连接',
+      dot: 'bg-zinc-400',
+      badge: 'text-zinc-300 bg-white/[0.07] border-white/10',
     };
   }
   if (s.includes('up') || s === 'uploading') {
     return {
       label: '已就绪',
-      code: 'READY',
+      code: '可播放',
       dot: 'bg-emerald-400',
-      badge: 'text-emerald-300 bg-emerald-950/80 border-emerald-500/40',
+      badge: 'text-emerald-200 bg-emerald-500/15 border-emerald-400/30',
     };
   }
   if (s.includes('paused') || s.includes('stopped')) {
     return {
       label: '已暂停',
-      code: 'STANDBY',
-      dot: 'bg-zinc-400',
-      badge: 'text-zinc-300 bg-zinc-900/90 border-zinc-700',
+      code: '已暂停',
+      dot: 'bg-zinc-500',
+      badge: 'text-zinc-300 bg-white/[0.06] border-white/10',
     };
   }
   if (s.includes('checking')) {
     return {
       label: '校验中',
-      code: 'VERIFY',
-      dot: 'bg-cyan-300 animate-pulse',
-      badge: 'text-cyan-200 bg-cyan-950/70 border-cyan-500/30',
+      code: '校验中',
+      dot: 'bg-zinc-200 animate-pulse',
+      badge: 'text-zinc-200 bg-white/10 border-white/15',
     };
   }
   if (s.includes('error') || s.includes('missing')) {
     return {
       label: '异常',
-      code: 'FAULT',
-      dot: 'bg-rose-500',
-      badge: 'text-rose-300 bg-rose-950/80 border-rose-500/40',
+      code: '异常',
+      dot: 'bg-rose-400',
+      badge: 'text-rose-200 bg-rose-500/15 border-rose-400/30',
     };
   }
   return {
     label: state,
-    code: state.toUpperCase().slice(0, 8),
+    code: state,
     dot: 'bg-zinc-400',
-    badge: 'text-zinc-300 bg-zinc-900/90 border-zinc-700',
+    badge: 'text-zinc-300 bg-white/[0.06] border-white/10',
   };
 }
 
@@ -219,15 +219,15 @@ export function evaluateBandwidth(singleMbps: number, multiMbps: number): Bandwi
 
   if (p4kRemux) {
     return {
-      rating: 'CLASS-S // 畅享 4K 原盘与 Remux',
-      summary: '单线程与并发吞吐均极度充裕，网页直出与本地播放器可流畅播放高码率 4K 原盘。',
+      rating: '极佳 · 畅享 4K 原盘与高码率 Remux',
+      summary: '单线程与并发吞吐均非常充裕，网页直出与本地播放器均可丝滑播放高码率 4K 原盘。',
       tier: 'excellent',
       tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
     };
   }
   if (p4kWeb) {
     return {
-      rating: 'CLASS-A // 流畅 4K 流媒体 & 1080P 高码率',
+      rating: '优秀 · 流畅 4K 流媒体与 1080P 高码率',
       summary: '可稳定播放 1080P Remux 与 4K Web-DL；超高码率 4K 原盘建议使用本地播放器缓冲。',
       tier: 'good',
       tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
@@ -235,15 +235,15 @@ export function evaluateBandwidth(singleMbps: number, multiMbps: number): Bandwi
   }
   if (p1080Web) {
     return {
-      rating: 'CLASS-B // 流畅 1080P 标准片源',
-      summary: '常规 1080P（4–10 Mbps）流畅；高码率片源建议拉起本地播放器或切换更优节点。',
+      rating: '良好 · 流畅 1080P 标准片源',
+      summary: '常规 1080P（4–10 Mbps）流畅播放；高码率片源建议使用本地播放器或切换更优节点。',
       tier: 'ok',
       tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
     };
   }
   return {
-    rating: 'CLASS-C // 链路偏慢 · 1080P 可能缓冲',
-    summary: '单线程速率偏低，建议确认服务器已开启 BBR 或切换晚高峰更稳定的中转节点。',
+    rating: '偏慢 · 1080P 可能出现缓冲',
+    summary: '单线程速率偏低，建议确认服务器已开启 BBR 或切换晚高峰更稳定的节点。',
     tier: 'poor',
     tiers: { p1080Web, p1080Remux, p4kWeb, p4kRemux },
   };
